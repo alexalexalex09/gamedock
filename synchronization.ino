@@ -79,7 +79,26 @@ bool syncing = false;
  */
 static const uint8_t BROADCAST_PEER[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
+/**
+ * @brief MAC address
+ *
+ * Address of the device
+ */
+static const uint8_t MACADDRESS = WiFi.macAddress();
 void setup()
+
+    /**
+     * @brief Custom struct for communication between devices
+     *
+     * @param MAC contains the sending device mac address
+     * @param syncing is a bool, needs #include <stdbool.h>
+     */
+    typedef struct sync_struct
+{
+    uint8_t[6] MAC;
+    bool syncing;
+} sync_struct;
+
 {
     // Set appropriate bit rate
     Serial.begin(115200);
@@ -97,8 +116,8 @@ void setup()
     }
 
     // Set up peers
+    // https://techtutorialsx.com/2019/10/20/esp32-getting-started-with-esp-now/
     esp_now_peer_info_t peerInfo;
-
     memcpy(peerInfo.peer_addr, BROADCAST_PEER, 6);
     peerInfo.channel = WIFI_CHANNEL;
     peerInfo.encrypt = false;
@@ -116,9 +135,27 @@ void setup()
 void loop()
 {
     syncButtonState = digitalRead(SYNC_BUTTON);
-    if (syncButtonState != 0 && syncing == false)
+    if (syncButtonState != 0) // Sync button is held down
     {
-        beginSync();
+        if (syncing == false) // Not already syncing
+        {
+            beginSync();
+        }
+        else // already syncing
+        {
+            continueSync();
+        }
+    }
+    if (syncButtonState == 0) // Sync button is not held down
+    {
+        if (syncing == true) // Syncing has started
+        {
+            endSync();
+        }
+        else
+        {
+            doNothing() // No syncing and no button press
+        }
     }
 
     testBroadcast();
@@ -139,6 +176,9 @@ void loop()
 void beginSync()
 {
     syncing = true;
+    sync_struct gameDockSync;
+    gameDockSync.MAC = MACADDRESS;
+    esp_now_send(BROADCAST_PEER, (uint8_t *) &gameDockSync, sizeof(sync_struct);
 }
 
 void testBroadcast()
@@ -153,4 +193,12 @@ void testBroadcast()
     {
         Serial.println("Error sending the data");
     }
+}
+
+void continueSync()
+{
+}
+
+void doNothing()
+{
 }
