@@ -109,6 +109,8 @@ void setup()
   Serial.begin(115200);
   // Not sure why wifi needs to be in STA mode yet
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
   Serial.println();
   Serial.print("ESP8266 Board MAC Address:  ");
   Serial.println(WiFi.macAddress());
@@ -160,6 +162,48 @@ void loop()
 }
 
 /**
+ * @brief Callback for when data is sent
+ * https://randomnerdtutorials.com/esp-now-one-to-many-esp8266-nodemcu/
+ * @param mac_addr destination address
+ * @param sendStatus success or failure, 0 is success
+ */
+void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
+{
+  char macStr[18];
+  Serial.print("Packet to:");
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print(macStr);
+  Serial.print(" send status: ");
+  if (sendStatus == 0)
+  {
+    Serial.println("Delivery success");
+  }
+  else
+  {
+    Serial.println("Delivery fail");
+  }
+}
+
+/**
+ * @brief Callback for when data is received (testBroadcast)
+ * https://randomnerdtutorials.com/esp-now-one-to-many-esp8266-nodemcu/
+ * @param mac sender mac address
+ * @param incomingData data received
+ * @param len length of bytes received
+ */
+void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
+{
+  uint8_t myData;
+  memcpy(&myData, incomingData, sizeof(myData));
+  Serial.print("Bytes received: ");
+  Serial.println(len);
+  Serial.print("data: ");
+  Serial.println(myData);
+  Serial.println();
+}
+
+/**
  * @brief Begin the sync process
  *
  * 1. Sync button is pressed
@@ -175,6 +219,11 @@ void beginSync()
   syncing = true;
   sync_struct gameDockSync;
   memcpy(gameDockSync.MAC, MACADDRESS, 6);
+  for (int i = 0; i < 6; i++)
+  {
+    Serial.print(gameDockSync.MAC[i]);
+  }
+  Serial.print('/r/n');
   esp_now_send(BROADCAST_PEER, (uint8_t *)&gameDockSync, sizeof(sync_struct));
 }
 
