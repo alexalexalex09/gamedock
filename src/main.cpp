@@ -33,9 +33,17 @@
 #include <stdbool.h>
 
 void beginSync();
+void continueSync();
+void endSync();
 void testBroadcast();
 void doSomething();
 void doNothing();
+
+/**
+ * @brief Used for testBroadcast() to determine if it's been enough time to test again.
+ *
+ */
+unsigned long lastTest = 0;
 
 /**
  * @brief PIN number of the sync button.
@@ -54,9 +62,21 @@ static const int FLASH_BUTTON = 0;
 /**
  * @brief PIN number of an LED.
  *
- * The default `16` is the blue LED on ESP-12E.
+ * The default `2` is the blue LED on ESP-12E.
  */
-static const int BUILTINLED = 16;
+static const int BUILTINLED = 2;
+
+/**
+ * @brief PIN number of the NodeMcu ESP-12E board's extra LED
+ *
+ */
+static const int NODEMCU_LED = 16;
+
+/**
+ * @brief Activity indicator LED wired up to GPIO 5
+ *
+ */
+static const int ACTIVITY_LED = 5;
 
 /**
  * @brief Standard Wifi channel for all devices
@@ -82,7 +102,7 @@ bool syncing = false;
  * @brief broadcast address
  *
  */
-uint8_t BROADCAST_PEER[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t BROADCAST_PEER[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 /**
  * @brief MAC address
@@ -103,64 +123,6 @@ typedef struct sync_struct
   bool syncing;
 } sync_struct;
 
-void setup()
-{
-  // Set appropriate bit rate
-  Serial.begin(115200);
-  // Not sure why wifi needs to be in STA mode yet
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-  Serial.println();
-  Serial.print("ESP8266 Board MAC Address:  ");
-  Serial.println(WiFi.macAddress());
-  WiFi.macAddress(MACADDRESS);
-
-  // Initialize ESPNow
-  if (esp_now_init() != 0)
-  {
-    Serial.println("Problem during ESP-NOW init");
-    return;
-  }
-
-  // Set up peers
-  // https://techtutorialsx.com/2019/10/20/esp32-getting-started-with-esp-now/
-  esp_now_add_peer(BROADCAST_PEER, ESP_NOW_ROLE_SLAVE, WIFI_CHANNEL, NULL, 0);
-  // Set pins
-  pinMode(SYNC_BUTTON, INPUT);
-  pinMode(BUILTINLED, OUTPUT);
-}
-
-void loop()
-{
-  syncButtonState = digitalRead(SYNC_BUTTON);
-  if (syncButtonState != 0) // Sync button is held down
-  {
-    if (syncing == false) // Not already syncing
-    {
-      beginSync();
-    }
-    else // already syncing
-    {
-      continueSync();
-    }
-  }
-  if (syncButtonState == 0) // Sync button is not held down
-  {
-    if (syncing == true) // Syncing has started
-    {
-      endSync();
-    }
-    else
-    {
-      doNothing(); // No syncing and no button press
-    }
-  }
-
-  testBroadcast();
-  delay(1000);
-}
-
 /**
  * @brief Callback for when data is sent
  * https://randomnerdtutorials.com/esp-now-one-to-many-esp8266-nodemcu/
@@ -169,6 +131,7 @@ void loop()
  */
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
 {
+  digitalWrite(ACTIVITY_LED, HIGH);
   char macStr[18];
   Serial.print("Packet to:");
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -183,6 +146,8 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
   {
     Serial.println("Delivery fail");
   }
+  delay(1000);
+  digitalWrite(ACTIVITY_LED, LOW);
 }
 
 /**
@@ -194,6 +159,7 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
  */
 void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 {
+  digitalWrite(ACTIVITY_LED, HIGH);
   uint8_t myData;
   memcpy(&myData, incomingData, sizeof(myData));
   Serial.print("Bytes received: ");
@@ -201,6 +167,86 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   Serial.print("data: ");
   Serial.println(myData);
   Serial.println();
+  delay(100);
+  digitalWrite(ACTIVITY_LED, LOW);
+}
+
+void setup()
+{
+  // Set appropriate bit rate
+  Serial.begin(115200);
+  // Not sure why wifi needs to be in STA mode yet
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
+  Serial.println();
+  Serial.print("ESP8266 Board MAC Address:  ");
+  Serial.println(WiFi.macAddress());
+  WiFi.macAddress(MACADDRESS);
+
+  // Initialize ESPNow
+  if (esp_now_init() != 0)
+  {
+    Serial.println("Problem during ESP-NOW init");
+    return;
+  }
+
+  // Set up peers
+  // https://techtutorialsx.com/2019/10/20/esp32-getting-started-with-esp-now/
+  Serial.println("Adding peer...");
+  Serial.println(esp_now_add_peer(BROADCAST_PEER, ESP_NOW_ROLE_SLAVE, WIFI_CHANNEL, NULL, 0));
+  Serial.println("Registering send:");
+  Serial.println(esp_now_register_send_cb(OnDataSent));
+  Serial.println("Registering receive:");
+  Serial.println(esp_now_register_recv_cb(OnDataRecv));
+  // Set pins
+  pinMode(SYNC_BUTTON, INPUT);
+  pinMode(BUILTINLED, OUTPUT);
+  digitalWrite(BUILTINLED, HIGH);
+  pinMode(NODEMCU_LED, OUTPUT);
+  digitalWrite(NODEMCU_LED, HIGH);
+  pinMode(ACTIVITY_LED, OUTPUT);
+}
+
+void loop()
+{
+  syncButtonState = digitalRead(SYNC_BUTTON);
+  if (syncButtonState != 0) // Sync button is held down
+  {
+    digitalWrite(BUILTINLED, LOW);
+    digitalWrite(ACTIVITY_LED, HIGH);
+    if (syncing == false) // Not already syncing
+    {
+      beginSync();
+      Serial.println("Button pressed");
+      Serial.println(syncButtonState);
+    }
+    else // already syncing
+    {
+      continueSync();
+    }
+  }
+  else // Sync button is not held down
+  {
+    digitalWrite(BUILTINLED, HIGH);
+    digitalWrite(ACTIVITY_LED, LOW);
+    if (syncing == true) // Syncing has started
+    {
+      endSync();
+      Serial.println("Button released");
+      Serial.println(syncButtonState);
+    }
+    else
+    {
+      doNothing(); // No syncing and no button press
+    }
+  }
+
+  if (millis() - lastTest > 5000)
+  {
+    testBroadcast();
+    lastTest = millis();
+  }
 }
 
 /**
@@ -223,14 +269,18 @@ void beginSync()
   {
     Serial.print(gameDockSync.MAC[i]);
   }
-  Serial.print('/r/n');
+  Serial.println(' ');
   esp_now_send(BROADCAST_PEER, (uint8_t *)&gameDockSync, sizeof(sync_struct));
 }
 
 void testBroadcast()
 {
+  Serial.println("Testing...");
+  digitalWrite(NODEMCU_LED, LOW);
   int x = millis();
-  esp_now_send(BROADCAST_PEER, (uint8_t *)&x, sizeof(int));
+  Serial.println(esp_now_send(BROADCAST_PEER, (uint8_t *)&x, sizeof(int)));
+  digitalWrite(NODEMCU_LED, HIGH);
+  Serial.println("Test complete");
 }
 
 void continueSync()
@@ -243,4 +293,5 @@ void doNothing()
 
 void endSync()
 {
+  syncing = false;
 }
