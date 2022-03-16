@@ -1,5 +1,4 @@
 /*
-
 //1. Sync button is pressed
 //2. Send broadcast signal with code for synchronization: "GameDockSync"+MAC
 //3. Alternate listening and sending (with randomization to make sure everyone gets heard?)
@@ -27,23 +26,21 @@
 //    When player 3 presses the next button, all devices will set the player turn to 4.
 //    After 5 seconds, player 4 is not found and set to inactive, and then the current player is advanced
 */
+
+/*
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/esp-now-one-to-many-esp8266-nodemcu/
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*/
+
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <espnow.h>
-#include <stdbool.h>
-
-void beginSync();
-void continueSync();
-void endSync();
-void testBroadcast();
-void doSomething();
-void doNothing();
-
-/**
- * @brief Used for testBroadcast() to determine if it's been enough time to test again.
- *
- */
-unsigned long lastTest = 0;
 
 /**
  * @brief PIN number of the sync button.
@@ -83,55 +80,78 @@ static const int ACTIVITY_LED = 5;
  *
  * Initially using channel 9 to see how it goes
  */
-static const int WIFI_CHANNEL = 9;
+static const int WIFI_CHANNEL = 1;
 
 /**
- * @brief Sync button current state
+ * @brief variable to track sync button status, 0=unpressed
+ *
  *
  */
 int syncButtonState = 0;
 
 /**
- * @brief Whether or not the device is currently in sync mode
+ * @brief variable to track sync status, 0=off
  *
- *  Boolean, default to false, needs #include <stdbool.h>
+ *
  */
-bool syncing = false;
+int syncStarted = 0;
 
 /**
- * @brief broadcast address
+ * @brief to show if the last broadcast was not sent
  *
  */
-uint8_t BROADCAST_PEER[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+int lastDeliveryFailed = -1;
 
-/**
- * @brief MAC address
- *
- * Address of the device
- */
-uint8_t MACADDRESS[6];
+// address used for broadcasting via espnow
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
+//
+uint8_t ownMacAddress[6];
+
+// Structure example to send data
+// Must match the receiver structure
 /**
- * @brief Custom struct for communication between devices
  *
- * @param MAC contains the sending device mac address
- * @param syncing is a bool, needs #include <stdbool.h>
+ * command:
+ * 1: Begin sync
+ * 2: End sync
+ *
  */
-typedef struct sync_struct
+typedef struct gamedock_struct
 {
-  uint8_t MAC[6];
-  bool syncing;
-} sync_struct;
+  int command;
+} gamedock_struct;
+
+// Create a struct_message called sending to store variables to be sent
+gamedock_struct sending;
+
+// Create a struct_message called receiving
+
+gamedock_struct lastSentPacket;
 
 /**
- * @brief Callback for when data is sent
- * https://randomnerdtutorials.com/esp-now-one-to-many-esp8266-nodemcu/
- * @param mac_addr destination address
- * @param sendStatus success or failure, 0 is success
+ * @brief send a gamedock_struct to all peers
+ *
  */
+gamedock_struct sendPacket(gamedock_struct toSend)
+{
+  // Send message via ESP-NOW
+  Serial.print("Message sending: command:");
+  Serial.println(toSend.command);
+  esp_now_send(0, (uint8_t *)&toSend, sizeof(toSend));
+  return toSend; // return this to be used again in case of failure
+}
+void printMacAddress(uint8_t *mac_addr)
+{
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print(macStr);
+}
+
+// Callback when data is sent
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
 {
-  digitalWrite(ACTIVITY_LED, HIGH);
   char macStr[18];
   Serial.print("Packet to:");
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -141,157 +161,126 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
   if (sendStatus == 0)
   {
     Serial.println("Delivery success");
+    lastDeliveryFailed = 0;
   }
   else
   {
     Serial.println("Delivery fail");
+    lastDeliveryFailed = 1;
   }
-  delay(1000);
-  digitalWrite(ACTIVITY_LED, LOW);
 }
 
-/**
- * @brief Callback for when data is received (testBroadcast)
- * https://randomnerdtutorials.com/esp-now-one-to-many-esp8266-nodemcu/
- * @param mac sender mac address
- * @param incomingData data received
- * @param len length of bytes received
- */
+// Callback function that will be executed when data is received
+// Callback function that will be executed when data is received
 void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 {
-  digitalWrite(ACTIVITY_LED, HIGH);
-  uint8_t myData;
-  memcpy(&myData, incomingData, sizeof(myData));
+  gamedock_struct receiving;
+  memcpy(&receiving, incomingData, sizeof(receiving));
   Serial.print("Bytes received: ");
   Serial.println(len);
-  Serial.print("data: ");
-  Serial.println(myData);
-  Serial.println();
-  delay(100);
-  digitalWrite(ACTIVITY_LED, LOW);
-}
+  Serial.print("Command received: ");
+  Serial.println(receiving.command);
 
-void setup()
-{
-  // Set appropriate bit rate
-  Serial.begin(115200);
-  // Not sure why wifi needs to be in STA mode yet
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-  Serial.println();
-  Serial.print("ESP8266 Board MAC Address:  ");
-  Serial.println(WiFi.macAddress());
-  WiFi.macAddress(MACADDRESS);
-
-  // Initialize ESPNow
-  if (esp_now_init() != 0)
+  switch (receiving.command)
   {
-    Serial.println("Problem during ESP-NOW init");
-    return;
-  }
-
-  // Set up peers
-  // https://techtutorialsx.com/2019/10/20/esp32-getting-started-with-esp-now/
-  Serial.println("Adding peer...");
-  Serial.println(esp_now_add_peer(BROADCAST_PEER, ESP_NOW_ROLE_SLAVE, WIFI_CHANNEL, NULL, 0));
-  Serial.println("Registering send:");
-  Serial.println(esp_now_register_send_cb(OnDataSent));
-  Serial.println("Registering receive:");
-  Serial.println(esp_now_register_recv_cb(OnDataRecv));
-  // Set pins
-  pinMode(SYNC_BUTTON, INPUT);
-  pinMode(BUILTINLED, OUTPUT);
-  digitalWrite(BUILTINLED, HIGH);
-  pinMode(NODEMCU_LED, OUTPUT);
-  digitalWrite(NODEMCU_LED, HIGH);
-  pinMode(ACTIVITY_LED, OUTPUT);
-}
-
-void loop()
-{
-  syncButtonState = digitalRead(SYNC_BUTTON);
-  if (syncButtonState != 0) // Sync button is held down
-  {
-    digitalWrite(BUILTINLED, LOW);
+  case 1:
     digitalWrite(ACTIVITY_LED, HIGH);
-    if (syncing == false) // Not already syncing
-    {
-      beginSync();
-      Serial.println("Button pressed");
-      Serial.println(syncButtonState);
-    }
-    else // already syncing
-    {
-      continueSync();
-    }
-  }
-  else // Sync button is not held down
-  {
-    digitalWrite(BUILTINLED, HIGH);
+    break;
+  case 2:
     digitalWrite(ACTIVITY_LED, LOW);
-    if (syncing == true) // Syncing has started
-    {
-      endSync();
-      Serial.println("Button released");
-      Serial.println(syncButtonState);
-    }
-    else
-    {
-      doNothing(); // No syncing and no button press
-    }
+    break;
+
+  default:
+    break;
   }
-
-  if (millis() - lastTest > 5000)
-  {
-    testBroadcast();
-    lastTest = millis();
-  }
-}
-
-/**
- * @brief Begin the sync process
- *
- * 1. Sync button is pressed
- * 2. Send broadcast signal with code for synchronization: "GameDockSync"+MAC
- * 3. Alternate listening and sending (with randomization to make sure everyone gets heard?)
- * 4. When another sync code is received, add it to the syncing list in order of MAC address
- * 5. Display current position in the syncing list on the device
- * 6. Add each MAC address as a peer
- */
-
-void beginSync()
-{
-  syncing = true;
-  sync_struct gameDockSync;
-  memcpy(gameDockSync.MAC, MACADDRESS, 6);
-  for (int i = 0; i < 6; i++)
-  {
-    Serial.print(gameDockSync.MAC[i]);
-  }
-  Serial.println(' ');
-  esp_now_send(BROADCAST_PEER, (uint8_t *)&gameDockSync, sizeof(sync_struct));
-}
-
-void testBroadcast()
-{
-  Serial.println("Testing...");
-  digitalWrite(NODEMCU_LED, LOW);
-  int x = millis();
-  Serial.println(esp_now_send(BROADCAST_PEER, (uint8_t *)&x, sizeof(int)));
-  digitalWrite(NODEMCU_LED, HIGH);
-  Serial.println("Test complete");
-}
-
-void continueSync()
-{
 }
 
 void doNothing()
 {
 }
 
-void endSync()
+void setup()
 {
-  syncing = false;
+  // Init Serial Monitor
+  Serial.begin(115200);
+  Serial.println("broadcast-test");
+
+  // set pins
+  pinMode(SYNC_BUTTON, INPUT);
+  pinMode(BUILTINLED, OUTPUT);
+  digitalWrite(BUILTINLED, HIGH);
+  pinMode(NODEMCU_LED, OUTPUT);
+  digitalWrite(NODEMCU_LED, HIGH);
+  pinMode(ACTIVITY_LED, OUTPUT);
+  Serial.println("Pins set");
+
+  // Get own mac address and store in ownMacAddress
+  WiFi.macAddress(ownMacAddress);
+  Serial.print("Mac address: ");
+  printMacAddress(ownMacAddress);
+  Serial.println(" ");
+
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  Serial.println("Wifi init");
+
+  // Init ESP-NOW
+  Serial.print("ESP-NOW initialized with exit code ");
+  Serial.println(esp_now_init());
+
+  // Set role to combo, will be both sending and receiving
+  Serial.println("Role set with exit code ");
+  Serial.println(esp_now_set_self_role(ESP_NOW_ROLE_COMBO));
+
+  // Register a callback function when data received
+  Serial.print("Receive cb registered with exit code ");
+  Serial.println(esp_now_register_recv_cb(OnDataRecv));
+
+  // Register a callback function when data sent
+  Serial.print("Send cb registered with exit code ");
+  Serial.println(esp_now_register_send_cb(OnDataSent));
+
+  // Register the broadcast peer
+  Serial.print("Peer added with exit code ");
+  Serial.println(esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0));
+}
+
+void loop()
+{
+  syncButtonState = digitalRead(SYNC_BUTTON);
+  if (syncButtonState != 0) // Sync button held down
+  {
+    if (syncStarted == 0) // Sync has not started
+    {
+      syncStarted = 1;                      // Mark sync as started
+      gamedock_struct sending;              // create a packet to send
+      sending.command = 1;                  // Set command to 1 = start sync
+      lastSentPacket = sendPacket(sending); // Send the packet
+    }
+    else
+    {
+      doNothing();
+    }
+  }
+  else // Sync button is not held down
+  {
+    if (syncStarted == 0)
+    { // Sync has already ended
+      doNothing();
+    }
+    else
+    {                                       // Sync has not yet ended
+      syncStarted = 0;                      // Mark sync as ended
+      gamedock_struct sending;              // create a packet to send
+      sending.command = 2;                  // set command to 2 = stop sync
+      lastSentPacket = sendPacket(sending); // Send the packet
+    }
+  }
+  if (lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
+  {
+    delay(50);
+    lastDeliveryFailed = -1; // Reset variable to indicate the failure was noticed
+    sendPacket(lastSentPacket);
+  }
 }
