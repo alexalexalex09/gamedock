@@ -109,6 +109,9 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // variable for holding this device's mac address
 uint8_t ownMacAddress[6];
 
+// variable for showing whether the peer list has been confirmed
+int ownPeerListConfirmed = 0;
+
 // Structure example to send data
 // Must match the receiver structure
 /**
@@ -116,7 +119,6 @@ uint8_t ownMacAddress[6];
  * purpose:
  * 1: I'm syncing and this is my MAC address
  * 2: This is the list of peers that I have
- * 3: I've received no new peers from my peers
  * 10: Turn on your LED!
  * 20: Turn off your LED!
  *
@@ -222,24 +224,18 @@ void broadcastMacAddress()
   gamedock_send_struct sending;          // Create a packet to send
   sending.purpose = 1;                   // set purpose to 1 = I'm syncing and this is my Mac address
   sending.address = *ownMacAddress;      // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
-  Serial.print("Sending own address: "); // Testing
-  Serial.println(sending.address);       // Testing
-  Serial.println(WiFi.macAddress());     // Testing
+  Serial.print("Sending own address: "); // Logging
+  Serial.println(sending.address);       // Logging
+  Serial.println(WiFi.macAddress());     // Logging
   lastSentPacket = sendPacket(sending);  // Send the packet
 }
 
 void confirmSync()
 {
+  Serial.println("Confirming sync..."); // logging
   gamedock_send_struct sending;         // Create a packet to send
   sending.peers = peers;                // Attach the full list of peers
   sending.purpose = 2;                  // 2: this is the list of peers I have
-  lastSentPacket = sendPacket(sending); // Send the packet
-}
-
-void reportSyncConfirmed()
-{
-  gamedock_send_struct sending;         // Create a packet to send
-  sending.purpose = 3;                  // 3: All of my peers have confirmed they have my list
   lastSentPacket = sendPacket(sending); // Send the packet
 }
 
@@ -248,17 +244,25 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
   int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
   for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
   {
-    int duplicatePeer = 0;                     // initialize a duplicate indicator
+    int duplicatePeer = 0; // initialize a duplicate indicator
+    // Logging
+    Serial.println("Checking MAC addresses:");
+    uint8_t macAddress = el_incomingPeer.address;
+    printMacAddress(&macAddress);
+    // end logging
     for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
     {
+
       if (el_peer.address == el_incomingPeer.address)
       {
-        duplicatePeer = 1; // if the incoming address equals a local address, it's a duplicate
-        break;             // if so, no need to further analyze, move on to the next address
+        duplicatePeer = 1;             // if the incoming address equals a local address, it's a duplicate
+        Serial.println(": duplicate"); // logging
+        break;                         // if so, no need to further analyze, move on to the next address
       }
     }
     if (duplicatePeer == 0) // after iterating, if no duplicate was detected
     {
+      Serial.println(": new");                   // logging
       gamedock_peer_struct newPeer;              // create a new peer
       newPeer.address = el_incomingPeer.address; // assign it the incoming address
       peers.push_back(newPeer);                  // push it to the vector
@@ -269,9 +273,12 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
   {
     confirmSync();
   }
-  else
+  else // There were no changes to the list
   {
-    reportSyncConfirmed();
+    if (ownPeerListConfirmed == 1) // If it's been long enough that I've already sent 5 confirmations out
+    {
+      ownPeerListConfirmed = 2; // Then receiving a confirmation sets this to 2. It might not happen, for instance if I'm the last one to confirm
+    }
   }
 }
 
@@ -312,16 +319,16 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 
   switch (receiving.purpose)
   {
-  case 1:
+  case 1: // I'm syncing and this is my MAC address
     checkAndSyncAddress(receiving);
     break;
-  case 2:
+  case 2: // This is the list of peers that I have
     confirmPeerList(receiving);
     break;
-  case 10:
+  case 10: // Turn on your LED!
     digitalWrite(ACTIVITY_LED, HIGH);
     break;
-  case 20:
+  case 20: // Turn off your LED!
     digitalWrite(ACTIVITY_LED, LOW);
     break;
 
@@ -335,7 +342,7 @@ void doNothing()
 }
 
 /**********************************************************************
- *                           Main
+ *                           Setup
  **********************************************************************/
 
 void setup()
@@ -385,11 +392,20 @@ void setup()
   Serial.println(esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0));
 }
 
+/**********************************************************************
+ *                           Loop
+ **********************************************************************/
+
 void loop()
 {
-  unsigned long startSyncTime;
-  syncButtonState = digitalRead(SYNC_BUTTON);
-  if (syncButtonState != 0) // Sync button held down
+  unsigned long startSyncTime; // initialize a time tracking variable
+
+  /**********************************************************************
+   *                           Sync Button
+   **********************************************************************/
+
+  syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
+  if (syncButtonState != 0)                   // Sync button held down
   {
     if (syncStarted == 0) // Sync has not started
     {
@@ -433,11 +449,21 @@ void loop()
         }
         else
         {
-          syncStarted = 0; // after 5 iterations, end the cycle and set syncStarted back to 0
+          confirmSync();            // Make sure no major changes have happened
+          syncStarted = 0;          // after 5 iterations, end the cycle and set syncStarted back to 0
+          ownPeerListConfirmed = 1; // This is as good as it gets! 1 = I've sent 5, receive callback will set this to 2 assuming I'm not the last one to confirm
         }
       }
     }
   }
+
+  /**********************************************************************
+   *                           Turn Button
+   **********************************************************************/
+
+  /**********************************************************************
+   *                           Send Failure Catchall
+   **********************************************************************/
   if (lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
   {
     delay(50);
