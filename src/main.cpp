@@ -7,7 +7,7 @@
 //6. Add each MAC address as a peer
 //7. When the sync button is released, broadcast the full list of MAC addresses
 //7. Listen for 60 seconds to broadcast messages.
-//    If the current device's address is in a broadcasted list of addresses, make sure each other address is in the current player list
+//8.   If the current device's address is in a broadcasted list of addresses, make sure each other address is in the current player list
 //9. Set the current turn to peer 1
 //10. If this device is currently taking a turn, send an "I'm taking a turn" ping every second
 //10a. If not taking a turn, listen for the "I'm taking a turn ping". If not heard for over 5 seconds, advance the current player
@@ -41,6 +41,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <espnow.h>
+#include <vector> // Needed for a dynamically-allocated peer array
 
 /**
  * @brief PIN number of the sync button.
@@ -105,42 +106,69 @@ int lastDeliveryFailed = -1;
 // address used for broadcasting via espnow
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-//
+// variable for holding this device's mac address
 uint8_t ownMacAddress[6];
 
 // Structure example to send data
 // Must match the receiver structure
 /**
  *
- * command:
- * 1: Begin sync
- * 2: End sync
+ * purpose:
+ * 1: I'm syncing and this is my MAC address
+ * 2: This is the list of peers that I have
+ * 3: I've received no new peers from my peers
+ * 10: Turn on your LED!
+ * 20: Turn off your LED!
  *
  */
-typedef struct gamedock_struct
+typedef struct gamedock_send_struct
 {
-  int command;
-} gamedock_struct;
+  int purpose;
+  uint8_t address;
+  std::vector<gamedock_peer_struct> peers;
+  int peerListConfirmed = 0;
+} gamedock_send_struct;
+
+/**
+ * Structure to store a received gamedock peer
+ *
+ */
+typedef struct gamedock_peer_struct
+{
+  uint8_t address;
+} gamedock_peer_struct;
+
+// Create the global vector of peers, max 19
+std::vector<gamedock_peer_struct> peers;
 
 // Create a struct_message called sending to store variables to be sent
-gamedock_struct sending;
+gamedock_send_struct sending;
 
 // Create a struct_message called receiving
 
-gamedock_struct lastSentPacket;
+gamedock_send_struct lastSentPacket;
 
 /**
- * @brief send a gamedock_struct to all peers
+ * @brief send a gamedock_send_struct to all peers
  *
  */
-gamedock_struct sendPacket(gamedock_struct toSend)
+gamedock_send_struct sendPacket(auto toSend)
 {
   // Send message via ESP-NOW
   Serial.print("Message sending: command:");
-  Serial.println(toSend.command);
+  Serial.println(toSend.purpose);
   esp_now_send(0, (uint8_t *)&toSend, sizeof(toSend));
   return toSend; // return this to be used again in case of failure
 }
+
+/**********************************************************************
+ *                           Functions
+ **********************************************************************/
+
+/**
+ * Print a mac address out to serial
+ *
+ */
 void printMacAddress(uint8_t *mac_addr)
 {
   char macStr[18];
@@ -148,6 +176,108 @@ void printMacAddress(uint8_t *mac_addr)
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
   Serial.print(macStr);
 }
+
+// For testing only, tells other devices to turn on their LED
+void turnOnYourLED()
+{
+  gamedock_send_struct sending;         // create a packet to send
+  sending.purpose = 10;                 // Set purpose to 10 = turn on your LED!
+  lastSentPacket = sendPacket(sending); // Send the packet
+}
+
+// For testing only, tells other devices to turn off their LED
+void turnOffYourLED()
+{
+  gamedock_send_struct sending;         // create a packet to send
+  sending.purpose = 20;                 // set purpose to 20 = turn off your LED!
+  lastSentPacket = sendPacket(sending); // Send the packet
+}
+
+void checkAndSyncAddress(gamedock_send_struct incomingAddress)
+{
+  int duplicatePeer = 0;                     // Initialize a duplicate indicator
+  for (gamedock_peer_struct el_peer : peers) // iterate over the vector of peers
+  {
+    if (el_peer.address == incomingAddress.address) // check each el_peer to see if its address is the incoming address
+    {
+      duplicatePeer = 1; // if it's duplicate, set duplicate to 1 (true)
+      break;             // no need to keep searching, we know it's a duplicate
+    }
+  }
+  if (duplicatePeer == 0) // after iterating, if no duplicate was detected
+  {
+    gamedock_peer_struct newPeer;              // create a new peer
+    newPeer.address = incomingAddress.address; // assign it the incoming address
+    peers.push_back(newPeer);                  // push it to the vector
+  }
+}
+
+/**
+ * @brief Send this device's mac address to the broadcast peer
+ *
+ *
+ */
+void broadcastMacAddress()
+{
+  gamedock_send_struct sending;          // Create a packet to send
+  sending.purpose = 1;                   // set purpose to 1 = I'm syncing and this is my Mac address
+  sending.address = *ownMacAddress;      // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
+  Serial.print("Sending own address: "); // Testing
+  Serial.println(sending.address);       // Testing
+  Serial.println(WiFi.macAddress());     // Testing
+  lastSentPacket = sendPacket(sending);  // Send the packet
+}
+
+void confirmSync()
+{
+  gamedock_send_struct sending;         // Create a packet to send
+  sending.peers = peers;                // Attach the full list of peers
+  sending.purpose = 2;                  // 2: this is the list of peers I have
+  lastSentPacket = sendPacket(sending); // Send the packet
+}
+
+void reportSyncConfirmed()
+{
+  gamedock_send_struct sending;         // Create a packet to send
+  sending.purpose = 3;                  // 3: All of my peers have confirmed they have my list
+  lastSentPacket = sendPacket(sending); // Send the packet
+}
+
+void confirmPeerList(gamedock_send_struct incomingPeers)
+{
+  int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
+  for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
+  {
+    int duplicatePeer = 0;                     // initialize a duplicate indicator
+    for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
+    {
+      if (el_peer.address == el_incomingPeer.address)
+      {
+        duplicatePeer = 1; // if the incoming address equals a local address, it's a duplicate
+        break;             // if so, no need to further analyze, move on to the next address
+      }
+    }
+    if (duplicatePeer == 0) // after iterating, if no duplicate was detected
+    {
+      gamedock_peer_struct newPeer;              // create a new peer
+      newPeer.address = el_incomingPeer.address; // assign it the incoming address
+      peers.push_back(newPeer);                  // push it to the vector
+      peerListChanged = 1;                       // There was a change to the peer list
+    }
+  }
+  if (peerListChanged == 1)
+  {
+    confirmSync();
+  }
+  else
+  {
+    reportSyncConfirmed();
+  }
+}
+
+/**********************************************************************
+ *                           Callbacks
+ **********************************************************************/
 
 // Callback when data is sent
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
@@ -171,22 +301,27 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
 }
 
 // Callback function that will be executed when data is received
-// Callback function that will be executed when data is received
 void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 {
-  gamedock_struct receiving;
+  gamedock_send_struct receiving;
   memcpy(&receiving, incomingData, sizeof(receiving));
   Serial.print("Bytes received: ");
   Serial.println(len);
   Serial.print("Command received: ");
-  Serial.println(receiving.command);
+  Serial.println(receiving.purpose);
 
-  switch (receiving.command)
+  switch (receiving.purpose)
   {
   case 1:
-    digitalWrite(ACTIVITY_LED, HIGH);
+    checkAndSyncAddress(receiving);
     break;
   case 2:
+    confirmPeerList(receiving);
+    break;
+  case 10:
+    digitalWrite(ACTIVITY_LED, HIGH);
+    break;
+  case 20:
     digitalWrite(ACTIVITY_LED, LOW);
     break;
 
@@ -198,6 +333,10 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 void doNothing()
 {
 }
+
+/**********************************************************************
+ *                           Main
+ **********************************************************************/
 
 void setup()
 {
@@ -248,33 +387,55 @@ void setup()
 
 void loop()
 {
+  unsigned long startSyncTime;
   syncButtonState = digitalRead(SYNC_BUTTON);
   if (syncButtonState != 0) // Sync button held down
   {
     if (syncStarted == 0) // Sync has not started
     {
-      syncStarted = 1;                      // Mark sync as started
-      gamedock_struct sending;              // create a packet to send
-      sending.command = 1;                  // Set command to 1 = start sync
-      lastSentPacket = sendPacket(sending); // Send the packet
+      syncStarted = 1;          // Start the sync
+      turnOnYourLED();          // Tell others to turn on their LEDs for fun
+      startSyncTime = millis(); // mark the time the sync started
     }
     else
     {
-      doNothing();
+      if (millis() - startSyncTime > 500 && startSyncTime > 0) // every half second after the sync starts
+      {
+        broadcastMacAddress(); // send this unit's MAC address to everyone else (who's syncing)
+      }
     }
   }
   else // Sync button is not held down
   {
-    if (syncStarted == 0)
-    { // Sync has already ended
+    if (syncStarted == 0) // Sync has already ended
+    {
       doNothing();
     }
-    else
-    {                                       // Sync has not yet ended
-      syncStarted = 0;                      // Mark sync as ended
-      gamedock_struct sending;              // create a packet to send
-      sending.command = 2;                  // set command to 2 = stop sync
-      lastSentPacket = sendPacket(sending); // Send the packet
+    else // Sync has not yet ended
+    {
+      if (syncStarted == 1) // If sync is currently running
+      {
+        syncStarted = 2;          // Sync is ending
+        turnOffYourLED();         // Tell others to turn off their LEDs for fun
+        confirmSync();            // Send a copy of my peer list to everyone else
+        startSyncTime = millis(); // reset the startSyncTime
+      }
+      else // Sync is already ending
+      {
+        if (syncStarted < 7) // confirm the list 5 times over just to be sure all changes propagate through the system
+        {
+          if (millis() - startSyncTime > 250) // wait .25 seconds between each confirmation
+          {
+            confirmSync();            // Make sure no major changes have happened
+            syncStarted++;            // increment syncStarted
+            startSyncTime = millis(); // reset the startSyncTime
+          }
+        }
+        else
+        {
+          syncStarted = 0; // after 5 iterations, end the cycle and set syncStarted back to 0
+        }
+      }
     }
   }
   if (lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
