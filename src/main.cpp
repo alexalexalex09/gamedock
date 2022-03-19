@@ -97,6 +97,9 @@ int syncButtonState = 0;
  */
 int syncStarted = 0;
 
+// initialize a time tracking variable
+unsigned long startSyncTime = 0;
+
 /**
  * @brief to show if the last broadcast was not sent
  *
@@ -112,6 +115,18 @@ uint8_t ownMacAddress[6];
 // variable for showing whether the peer list has been confirmed
 int ownPeerListConfirmed = 0;
 
+/**
+ * Structure to store a received gamedock peer
+ *
+ */
+typedef struct gamedock_peer_struct
+{
+  uint8_t address[6];
+} gamedock_peer_struct;
+
+// Create the global vector of peers, max 19
+std::vector<gamedock_peer_struct> peers;
+
 // Structure example to send data
 // Must match the receiver structure
 /**
@@ -126,22 +141,10 @@ int ownPeerListConfirmed = 0;
 typedef struct gamedock_send_struct
 {
   int purpose;
-  uint8_t address;
+  uint8_t address[6];
   std::vector<gamedock_peer_struct> peers;
   int peerListConfirmed = 0;
 } gamedock_send_struct;
-
-/**
- * Structure to store a received gamedock peer
- *
- */
-typedef struct gamedock_peer_struct
-{
-  uint8_t address;
-} gamedock_peer_struct;
-
-// Create the global vector of peers, max 19
-std::vector<gamedock_peer_struct> peers;
 
 // Create a struct_message called sending to store variables to be sent
 gamedock_send_struct sending;
@@ -154,7 +157,7 @@ gamedock_send_struct lastSentPacket;
  * @brief send a gamedock_send_struct to all peers
  *
  */
-gamedock_send_struct sendPacket(auto toSend)
+gamedock_send_struct sendPacket(gamedock_send_struct toSend)
 {
   // Send message via ESP-NOW
   Serial.print("Message sending: command:");
@@ -179,38 +182,55 @@ void printMacAddress(uint8_t *mac_addr)
   Serial.print(macStr);
 }
 
-// For testing only, tells other devices to turn on their LED
-void turnOnYourLED()
+void printPeers()
 {
-  gamedock_send_struct sending;         // create a packet to send
-  sending.purpose = 10;                 // Set purpose to 10 = turn on your LED!
-  lastSentPacket = sendPacket(sending); // Send the packet
+  Serial.println("Printing Peers:");
+  for (unsigned int i = 0; i < peers.size(); i++)
+  {
+    Serial.print(i + 1);
+    Serial.print(": ");
+    printMacAddress(peers[i].address);
+    Serial.println();
+  }
 }
 
-// For testing only, tells other devices to turn off their LED
-void turnOffYourLED()
+boolean areMacAddressesEqual(uint8_t *first, uint8_t *second)
 {
-  gamedock_send_struct sending;         // create a packet to send
-  sending.purpose = 20;                 // set purpose to 20 = turn off your LED!
-  lastSentPacket = sendPacket(sending); // Send the packet
+  Serial.println("Checking if addresses are equal");
+  for (int i = 0; i < 6; i++)
+  {
+    if (first[i] != second[i])
+    {
+      Serial.println("Unequal");
+      return false;
+    }
+  }
+  Serial.println("Address was equal");
+  return true;
 }
 
 void checkAndSyncAddress(gamedock_send_struct incomingAddress)
 {
-  int duplicatePeer = 0;                     // Initialize a duplicate indicator
+  int duplicatePeer = 0; // Initialize a duplicate indicator
+  Serial.print("Checking address: ");
+  printMacAddress(incomingAddress.address);
+  Serial.println();
   for (gamedock_peer_struct el_peer : peers) // iterate over the vector of peers
   {
-    if (el_peer.address == incomingAddress.address) // check each el_peer to see if its address is the incoming address
+    if (areMacAddressesEqual(el_peer.address, incomingAddress.address)) // check each el_peer to see if its address is the incoming address
     {
       duplicatePeer = 1; // if it's duplicate, set duplicate to 1 (true)
       break;             // no need to keep searching, we know it's a duplicate
     }
   }
+  Serial.println("Finished iteration");
   if (duplicatePeer == 0) // after iterating, if no duplicate was detected
   {
-    gamedock_peer_struct newPeer;              // create a new peer
-    newPeer.address = incomingAddress.address; // assign it the incoming address
-    peers.push_back(newPeer);                  // push it to the vector
+    gamedock_peer_struct newPeer; // create a new peer
+    memcpy(&newPeer.address,
+           incomingAddress.address,
+           sizeof(*incomingAddress.address) * 6); // assign it the incoming address
+    peers.push_back(newPeer);                     // push it to the vector
   }
 }
 
@@ -221,15 +241,49 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
  */
 void broadcastMacAddress()
 {
-  gamedock_send_struct sending;          // Create a packet to send
-  sending.purpose = 1;                   // set purpose to 1 = I'm syncing and this is my Mac address
-  sending.address = *ownMacAddress;      // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
+  gamedock_send_struct sending;              // Create a packet to send
+  sending.purpose = 1;                       // set purpose to 1 = I'm syncing and this is my Mac address
+  memcpy(sending.address, ownMacAddress, 6); // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
+  uint8_t *testaddress = ownMacAddress;
   Serial.print("Sending own address: "); // Logging
-  Serial.println(sending.address);       // Logging
+  printMacAddress(sending.address);      // Logging
+  Serial.println();                      // Logging
   Serial.println(WiFi.macAddress());     // Logging
   lastSentPacket = sendPacket(sending);  // Send the packet
 }
 
+/**
+ * @brief Remove the broadcastAddress from the esp now peer list and adds all peers in the peers global
+ *
+ *
+ */
+void switchFromBroadcastToPeers()
+{
+  esp_now_del_peer(broadcastAddress);
+  for (gamedock_peer_struct el_peer : peers)
+  {
+    esp_now_add_peer(el_peer.address, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+  }
+}
+
+/**
+ * @brief Remove the peers in the peers global from the esp now peer list and adds the broadcastAddress
+ *
+ *
+ */
+void switchFromPeersToBroadcast()
+{
+  for (gamedock_peer_struct el_peer : peers)
+  {
+    esp_now_del_peer(el_peer.address);
+  }
+  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+}
+
+/**
+ * @brief Send the list of peers out to all currently registered peers
+ *
+ */
 void confirmSync()
 {
   Serial.println("Confirming sync..."); // logging
@@ -237,19 +291,24 @@ void confirmSync()
   sending.peers = peers;                // Attach the full list of peers
   sending.purpose = 2;                  // 2: this is the list of peers I have
   lastSentPacket = sendPacket(sending); // Send the packet
+  printPeers();
 }
 
+/**
+ * @brief Given a struct with a peers parameter, push it to the global peers vector if it's new
+ *
+ *
+ */
 void confirmPeerList(gamedock_send_struct incomingPeers)
 {
-  int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
+  // int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
   for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
   {
     int duplicatePeer = 0; // initialize a duplicate indicator
     // Logging
     Serial.println("Checking MAC addresses:");
-    uint8_t macAddress = el_incomingPeer.address;
-    printMacAddress(&macAddress);
-    // end logging
+    // printMacAddress(el_incomingPeer.address);
+    //  end logging
     for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
     {
 
@@ -257,19 +316,26 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
       {
         duplicatePeer = 1;             // if the incoming address equals a local address, it's a duplicate
         Serial.println(": duplicate"); // logging
-        break;                         // if so, no need to further analyze, move on to the next address
+        printMacAddress(el_peer.address);
+        Serial.println();
+        printMacAddress(el_incomingPeer.address);
+        Serial.println();
+        break; // if so, no need to further analyze, move on to the next address
       }
     }
     if (duplicatePeer == 0) // after iterating, if no duplicate was detected
     {
-      Serial.println(": new");                   // logging
-      gamedock_peer_struct newPeer;              // create a new peer
-      newPeer.address = el_incomingPeer.address; // assign it the incoming address
-      peers.push_back(newPeer);                  // push it to the vector
-      peerListChanged = 1;                       // There was a change to the peer list
+      Serial.println(": new");      // logging
+      gamedock_peer_struct newPeer; // create a new peer
+      Serial.println("Assigning...");
+      memcpy(newPeer.address, el_incomingPeer.address, sizeof(el_incomingPeer.address)); // assign it the incoming address
+      Serial.println("Pushing...");
+      peers.push_back(newPeer); // push it to the vector
+      Serial.println("Peer list confirmed successfully");
+      // peerListChanged = 1;                       // There was a change to the peer list
     }
   }
-  if (peerListChanged == 1)
+  /*if (peerListChanged == 1)
   {
     confirmSync();
   }
@@ -279,7 +345,7 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
     {
       ownPeerListConfirmed = 2; // Then receiving a confirmation sets this to 2. It might not happen, for instance if I'm the last one to confirm
     }
-  }
+  }*/
 }
 
 /**********************************************************************
@@ -314,22 +380,23 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   memcpy(&receiving, incomingData, sizeof(receiving));
   Serial.print("Bytes received: ");
   Serial.println(len);
-  Serial.print("Command received: ");
+  Serial.print("Purpose received: ");
   Serial.println(receiving.purpose);
+  Serial.print("Address received: ");
+  printMacAddress(&receiving.address[0]);
+  Serial.println();
 
   switch (receiving.purpose)
   {
   case 1: // I'm syncing and this is my MAC address
-    checkAndSyncAddress(receiving);
+    if (syncStarted != 0)
+    { // If this device is also syncing
+      checkAndSyncAddress(receiving);
+    }
     break;
   case 2: // This is the list of peers that I have
+          // Todo: Shouldn't this only be done if I'm syncing? Or just finished syncing? Or maybe this should only be sent to confirmed peers?
     confirmPeerList(receiving);
-    break;
-  case 10: // Turn on your LED!
-    digitalWrite(ACTIVITY_LED, HIGH);
-    break;
-  case 20: // Turn off your LED!
-    digitalWrite(ACTIVITY_LED, LOW);
     break;
 
   default:
@@ -349,7 +416,7 @@ void setup()
 {
   // Init Serial Monitor
   Serial.begin(115200);
-  Serial.println("broadcast-test");
+  Serial.println("gamedock");
 
   // set pins
   pinMode(SYNC_BUTTON, INPUT);
@@ -398,7 +465,6 @@ void setup()
 
 void loop()
 {
-  unsigned long startSyncTime; // initialize a time tracking variable
 
   /**********************************************************************
    *                           Sync Button
@@ -409,14 +475,16 @@ void loop()
   {
     if (syncStarted == 0) // Sync has not started
     {
-      syncStarted = 1;          // Start the sync
-      turnOnYourLED();          // Tell others to turn on their LEDs for fun
+      syncStarted = 1; // Start the sync
+      digitalWrite(ACTIVITY_LED, HIGH);
       startSyncTime = millis(); // mark the time the sync started
     }
     else
     {
-      if (millis() - startSyncTime > 500 && startSyncTime > 0) // every half second after the sync starts
+      if ((millis() - startSyncTime) > 500 && startSyncTime > 0) // every half second after the sync starts
       {
+        startSyncTime = millis();
+        Serial.println("Broadcasting Mac address...");
         broadcastMacAddress(); // send this unit's MAC address to everyone else (who's syncing)
       }
     }
@@ -431,10 +499,12 @@ void loop()
     {
       if (syncStarted == 1) // If sync is currently running
       {
-        syncStarted = 2;          // Sync is ending
-        turnOffYourLED();         // Tell others to turn off their LEDs for fun
-        confirmSync();            // Send a copy of my peer list to everyone else
-        startSyncTime = millis(); // reset the startSyncTime
+        syncStarted = 2; // Sync is ending
+        digitalWrite(ACTIVITY_LED, LOW);
+        delay(10);                    // Don't crowd the channel
+        switchFromBroadcastToPeers(); // Remove the broadcast peer and register the list of peers
+        confirmSync();                // Send a copy of my peer list to my peers
+        startSyncTime = millis();     // reset the startSyncTime
       }
       else // Sync is already ending
       {
@@ -449,7 +519,8 @@ void loop()
         }
         else
         {
-          confirmSync();            // Make sure no major changes have happened
+          confirmSync(); // Make sure no major changes have happened
+          Serial.println("Peer list finally confirmed");
           syncStarted = 0;          // after 5 iterations, end the cycle and set syncStarted back to 0
           ownPeerListConfirmed = 1; // This is as good as it gets! 1 = I've sent 5, receive callback will set this to 2 assuming I'm not the last one to confirm
         }
