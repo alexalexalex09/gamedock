@@ -179,7 +179,7 @@ gamedock_send_struct sendPacket(gamedock_send_struct toSend)
  * @brief Print a mac address out to serial
  *
  */
-void printMacAddress(uint8_t *mac_addr)
+void printMacAddress(uint8_t mac_addr[6])
 {
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -192,9 +192,9 @@ void printMacAddress(uint8_t *mac_addr)
  *
  *
  */
-void copyMacAddress(uint8_t *dest, uint8_t *source)
+void copyMacAddress(uint8_t dest[], uint8_t source[], int size = 6)
 {
-  for (int i = 0; i < 6; i++)
+  for (int i = 0; i < size; i++)
   {
     dest[i] = source[i];
   }
@@ -225,7 +225,7 @@ void printPeers(std::vector<gamedock_peer_struct> peersToPrint)
  *
  *
  */
-boolean areMacAddressesEqual(uint8_t *first, uint8_t *second)
+boolean areMacAddressesEqual(uint8_t first[6], uint8_t second[6])
 {
   Serial.println("Checking if addresses are equal");
   for (int i = 0; i < 6; i++)
@@ -253,7 +253,7 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
   Serial.println();
   for (gamedock_peer_struct el_peer : peers) // iterate over the vector of peers
   {
-    if (areMacAddressesEqual(&el_peer.address[0], &incomingAddress.address[0])) // check each el_peer to see if its address is the incoming address
+    if (areMacAddressesEqual(el_peer.address, incomingAddress.address)) // check each el_peer to see if its address is the incoming address
     {
       duplicatePeer = 1; // if it's duplicate, set duplicate to 1 (true)
       break;             // no need to keep searching, we know it's a duplicate
@@ -263,7 +263,7 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
   if (duplicatePeer == 0) // after iterating, if no duplicate was detected
   {
     gamedock_peer_struct newPeer; // create a new peer
-    copyMacAddress(&newPeer.address[0], &incomingAddress.address[0]);
+    copyMacAddress(newPeer.address, incomingAddress.address);
     peers.push_back(newPeer); // push it to the vector
   }
 }
@@ -275,11 +275,11 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
  */
 void broadcastMacAddress()
 {
-  gamedock_send_struct sending = {0};                     // Create a packet to send
-  sending.purpose = 1;                                    // set purpose to 1 = I'm syncing and this is my Mac address
-  copyMacAddress(&sending.address[0], &ownMacAddress[0]); // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
-  Serial.print("Sending own address: ");                  // Logging
-  printMacAddress(sending.address);                       // Logging
+  gamedock_send_struct sending = {0};             // Create a packet to send
+  sending.purpose = 1;                            // set purpose to 1 = I'm syncing and this is my Mac address
+  copyMacAddress(sending.address, ownMacAddress); // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
+  Serial.print("Sending own address: ");          // Logging
+  printMacAddress(sending.address);               // Logging
   Serial.println();
   Serial.println(WiFi.macAddress()); // Logging
   printPeers(sending.peers);
@@ -325,9 +325,9 @@ void confirmSync()
   gamedock_send_struct sending = {0};   // Create a packet to send
   sending.peers = peers;                // Attach the full list of peers
   sending.peerListConfirmed = 0;
-  copyMacAddress(&sending.address[0], &dummyAddress[0]); // Send a dummy address
+  copyMacAddress(sending.address, dummyAddress); // Send a dummy address
   Serial.print("Mac to send: ");
-  printMacAddress(&sending.address[0]);
+  printMacAddress(sending.address);
   Serial.println();
   sending.purpose = 2;                  // 2: this is the list of peers I have
   lastSentPacket = sendPacket(sending); // Send the packet
@@ -347,7 +347,7 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
     int duplicatePeer = 0;                     // initialize a duplicate indicator
     Serial.println("Checking MAC addresses:"); // Logging
     printMacAddress(el_incomingPeer.address);  // Logging
-    if (areMacAddressesEqual(&el_incomingPeer.address[0], &dummyAddress[0]))
+    if (areMacAddressesEqual(el_incomingPeer.address, dummyAddress))
     {
       Serial.println("Dummy address received");
     }
@@ -372,7 +372,7 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
         Serial.println(": new");      // logging
         gamedock_peer_struct newPeer; // create a new peer
         Serial.println("Assigning...");
-        copyMacAddress(&newPeer.address[0], &el_incomingPeer.address[0]); // assign it the incoming address
+        copyMacAddress(newPeer.address, el_incomingPeer.address); // assign it the incoming address
         Serial.println("Pushing...");
         peers.push_back(newPeer); // push it to the vector
         Serial.println("Peer list confirmed successfully");
@@ -429,7 +429,7 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   Serial.print("Purpose received: ");
   Serial.println(receiving.purpose);
   Serial.print("Address received: ");
-  printMacAddress(&receiving.address[0]);
+  printMacAddress(receiving.address);
   Serial.println();
 
   switch (receiving.purpose)
