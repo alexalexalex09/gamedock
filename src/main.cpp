@@ -94,44 +94,66 @@ static const int WIFI_CHANNEL = 1;
  *
  *
  */
-int syncButtonState = 0;
+int g_syncButtonState = 0;
 
 /**
  * @brief variable to track sync status, 0=off
  *
  *
  */
-int syncStarted = 0;
+int g_syncStarted = 0;
 
-// initialize a time tracking variable
-unsigned long startSyncTime = 0;
+/**
+ * @brief variable to track time for syncing
+ *
+ */
+unsigned long g_startSyncTime = 0;
 
 /**
  * @brief to show if the last broadcast was not sent
  *
  */
-int lastDeliveryFailed = -1;
+int g_lastDeliveryFailed = -1;
 
-// address used for broadcasting via espnow
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+/**
+ * @brief address used for broadcasting via espnow
+ *
+ */
+uint8_t BROADCAST_ADDRESS[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// variable for holding this device's mac address
-uint8_t ownMacAddress[6];
+/**
+ * @brief variable for holding this device's mac address
+ *
+ */
+uint8_t OWN_MAC_ADDRESS[6];
 
-// variable to hold a dummy address (all zeroes)
+/**
+ * @brief variable to hold a dummy address (all zeroes)
+ *
+ */
 uint8_t DUMMY_ADDRESS[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-// variable for showing whether the peer list has been confirmed
-int ownPeerListConfirmed = 0;
+/**
+ * @brief variable for showing whether the peer list has been confirmed
+ *
+ */
+int g_ownPeerListConfirmed = 0;
 
+/**
+ * @brief the maximum number of peers we're willing to allow
+ *
+ */
 static const int MAX_PEERS = 20;
 
-// Create the global vector of peers, max 20
+/**
+ * @brief a global vector of peers, max 20
+ *
+ *
+ */
 uint8_t g_peers[MAX_PEERS][6] = {0};
 
-// Structure example to send data
-// Must match the receiver structure
 /**
+ * @brief a structure to send data, which must be matched on the receiving side
  *
  * uint8_t address[6]:
  * The address that is currently being sent
@@ -378,20 +400,20 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
  */
 void sendMacAddress()
 {
-  gamedock_send_struct sending = {0};             // Create a packet to send
-  sending.purpose = 1;                            // set purpose to 1 = I'm syncing and this is my Mac address
-  copyMacAddress(sending.address, ownMacAddress); // Include the mac address of this device.
-  lastSentPacket = sendPacket(sending);           // Send the packet
+  gamedock_send_struct sending = {0};               // Create a packet to send
+  sending.purpose = 1;                              // set purpose to 1 = I'm syncing and this is my Mac address
+  copyMacAddress(sending.address, OWN_MAC_ADDRESS); // Include the mac address of this device.
+  lastSentPacket = sendPacket(sending);             // Send the packet
 }
 
 /**
- * @brief Remove the broadcastAddress from the esp now peer list and adds all peers in the peers global
+ * @brief Remove the BROADCAST_ADDRESS from the esp now peer list and adds all peers in the peers global
  *
  *
  */
 void switchFromBroadcastToPeers()
 {
-  esp_now_del_peer(broadcastAddress);
+  esp_now_del_peer(BROADCAST_ADDRESS);
   for (int i = 0; i < MAX_PEERS; i++)
   {
     esp_now_add_peer(g_peers[i], ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
@@ -399,7 +421,7 @@ void switchFromBroadcastToPeers()
 }
 
 /**
- * @brief Remove the peers in the peers global from the esp now peer list and adds the broadcastAddress
+ * @brief Remove the peers in the peers global from the esp now peer list and adds the BROADCAST_ADDRESS
  *
  *
  */
@@ -409,7 +431,7 @@ void switchFromPeersToBroadcast()
   {
     esp_now_del_peer(g_peers[i]);
   }
-  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+  esp_now_add_peer(BROADCAST_ADDRESS, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
 }
 
 void copyPeers(uint8_t dest[MAX_PEERS][6], uint8_t source[MAX_PEERS][6])
@@ -476,7 +498,7 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
     }
     else
     {
-      if (areMacAddressesEqual(el_incomingPeer.address, broadcastAddress))
+      if (areMacAddressesEqual(el_incomingPeer.address, BROADCAST_ADDRESS))
       {
         Serial.println("Broadcast address received");
       }
@@ -531,12 +553,12 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
   if (sendStatus == 0)
   {
     Serial.println("Delivery success");
-    lastDeliveryFailed = 0;
+    g_lastDeliveryFailed = 0;
   }
   else
   {
     Serial.println("Delivery fail");
-    lastDeliveryFailed = 1;
+    g_lastDeliveryFailed = 1;
   }
 }
 
@@ -559,7 +581,7 @@ void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   switch (receiving.purpose)
   {
   case 1: // I'm syncing and this is my MAC address
-    if (syncStarted != 0)
+    if (g_syncStarted != 0)
     { // If this device is also syncing
       checkAndSyncAddress(receiving);
     }
@@ -567,7 +589,7 @@ void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   case 2: // This is the list of peers that I have
     confirmPeerList(receiving);
     Serial.print("SyncStarted: ");
-    Serial.println(syncStarted);
+    Serial.println(g_syncStarted);
     break;
 
   default:
@@ -599,10 +621,10 @@ void setup()
   pinMode(ACTIVITY_LED, OUTPUT);
   Serial.println("Pins set");
 
-  // Get own mac address and store in ownMacAddress
-  WiFi.macAddress(ownMacAddress);
+  // Get own mac address and store in OWN_MAC_ADDRESS
+  WiFi.macAddress(OWN_MAC_ADDRESS);
   Serial.print("Mac address: ");
-  printMacAddress(ownMacAddress);
+  printMacAddress(OWN_MAC_ADDRESS);
   Serial.println(" ");
 
   // Set device as a Wi-Fi Station
@@ -628,7 +650,7 @@ void setup()
 
   // Register the broadcast peer
   Serial.print("Peer added with exit code ");
-  Serial.println(esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0));
+  Serial.println(esp_now_add_peer(BROADCAST_ADDRESS, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0));
 }
 
 /********************************************************************************************************************************************
@@ -641,20 +663,20 @@ void loop()
    *                           Sync Button
    ********************************************************************************************************************************************/
 
-  syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
-  if (syncButtonState != 0)                   // Sync button held down
+  g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
+  if (g_syncButtonState != 0)                   // Sync button held down
   {
-    if (syncStarted == 0) // Sync has not started
+    if (g_syncStarted == 0) // Sync has not started
     {
-      syncStarted = 1; // Start the sync
+      g_syncStarted = 1; // Start the sync
       digitalWrite(ACTIVITY_LED, HIGH);
-      startSyncTime = millis(); // mark the time the sync started
+      g_startSyncTime = millis(); // mark the time the sync started
     }
     else
     {
-      if ((millis() - startSyncTime) > 500 && startSyncTime > 0) // every half second after the sync starts
+      if ((millis() - g_startSyncTime) > 500 && g_startSyncTime > 0) // every half second after the sync starts
       {
-        startSyncTime = millis();
+        g_startSyncTime = millis();
         Serial.println("Broadcasting Mac address...");
         sendMacAddress(); // send this unit's MAC address to everyone else (who's syncing)
       }
@@ -662,26 +684,26 @@ void loop()
   }
   else // Sync button is not held down
   {
-    if (syncStarted == 0) // Sync has already ended
+    if (g_syncStarted == 0) // Sync has already ended
     {
       doNothing();
     }
     else // Sync has not yet ended
     {
-      if (syncStarted == 1) // If sync is currently running
+      if (g_syncStarted == 1) // If sync is currently running
       {
-        syncStarted = 2; // Sync is ending
+        g_syncStarted = 2; // Sync is ending
         digitalWrite(ACTIVITY_LED, LOW);
-        delay(10);                // Don't crowd the channel
-                                  // switchFromBroadcastToPeers();          // Remove the broadcast peer and register the list of peers
-        confirmSync();            // Send a copy of my peer list to my peers
-        startSyncTime = millis(); // reset the startSyncTime
+        delay(10);                  // Don't crowd the channel
+                                    // switchFromBroadcastToPeers();          // Remove the broadcast peer and register the list of peers
+        confirmSync();              // Send a copy of my peer list to my peers
+        g_startSyncTime = millis(); // reset the g_startSyncTime
       }
       else // Sync is already ending
       {
         Serial.println("Peer list finally confirmed");
-        syncStarted = 0;          // after 5 iterations, end the cycle and set syncStarted back to 0
-        ownPeerListConfirmed = 1; // This is as good as it gets! 1 = I've sent 5, receive callback will set this to 2 assuming I'm not the last one to confirm
+        g_syncStarted = 0;          // after 5 iterations, end the cycle and set g_syncStarted back to 0
+        g_ownPeerListConfirmed = 1; // This is as good as it gets! 1 = I've sent 5, receive callback will set this to 2 assuming I'm not the last one to confirm
       }
     }
   }
@@ -693,10 +715,10 @@ void loop()
   /********************************************************************************************************************************************
    *                           Send Failure Catchall
    ********************************************************************************************************************************************/
-  if (lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
+  if (g_lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
   {
     delay(50);
-    lastDeliveryFailed = 0; // Reset variable to indicate the failure was noticed
+    g_lastDeliveryFailed = 0; // Reset variable to indicate the failure was noticed
     lastSentPacket.resend = 1;
     sendPacket(lastSentPacket);
   }
