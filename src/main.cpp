@@ -28,6 +28,12 @@
 */
 
 /*
+MAC Addresses:
+Green: ac:0b:fb:d6:bc:73
+BLue: 40:91:51:52:f0:5b
+*/
+
+/*
   Rui Santos
   Complete project details at https://RandomNerdTutorials.com/esp-now-one-to-many-esp8266-nodemcu/
 
@@ -118,17 +124,8 @@ uint8_t dummyAddress[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 // variable for showing whether the peer list has been confirmed
 int ownPeerListConfirmed = 0;
 
-/**
- * Structure to store a received gamedock peer
- *
- */
-typedef struct gamedock_peer_struct
-{
-  uint8_t address[6];
-} gamedock_peer_struct;
-
 // Create the global vector of peers, max 19
-std::vector<gamedock_peer_struct> peers;
+uint8_t peers[20][6] = {0};
 
 // Structure example to send data
 // Must match the receiver structure
@@ -140,16 +137,17 @@ std::vector<gamedock_peer_struct> peers;
  * int purpose:
  * 1: I'm syncing and this is my MAC address
  * 2: This is the list of peers that I have
- * 10: Turn on your LED!
- * 20: Turn off your LED!
+ * int resend = 0 to indicate if this is being resent because of a reported sending failure
  *
  */
 typedef struct gamedock_send_struct
 {
   int purpose;
   uint8_t address[6];
-  std::vector<gamedock_peer_struct> peers;
+  // std::vector<gamedock_peer_struct> peers;
+  uint8_t peers[20][6] = {0};
   int peerListConfirmed = 0;
+  int resend = 0;
 } gamedock_send_struct;
 
 // Create a struct_message called sending to store variables to be sent
@@ -158,22 +156,9 @@ gamedock_send_struct sending = {0};
 // Create a struct_message called receiving
 gamedock_send_struct lastSentPacket = {0};
 
-/**
- * @brief send a gamedock_send_struct to all peers
- *
- */
-gamedock_send_struct sendPacket(gamedock_send_struct toSend)
-{
-  // Send message via ESP-NOW
-  Serial.print("Message sending: command: ");
-  Serial.println(toSend.purpose);
-  esp_now_send(0, (uint8_t *)&toSend, sizeof(toSend));
-  return toSend; // return this to be used again in case of failure
-}
-
-/**********************************************************************
+/********************************************************************************************************************************************
  *                           Functions
- **********************************************************************/
+ ********************************************************************************************************************************************/
 
 /**
  * @brief Print a mac address out to serial
@@ -185,38 +170,6 @@ void printMacAddress(uint8_t mac_addr[6])
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
   Serial.print(macStr);
-}
-
-/**
- * @brief copy a mac address from param 2 to param 1
- *
- *
- */
-void copyMacAddress(uint8_t dest[], uint8_t source[], int size = 6)
-{
-  for (int i = 0; i < size; i++)
-  {
-    dest[i] = source[i];
-  }
-}
-
-/**
- * @brief print a (vector) list of peers
- *
- *
- */
-void printPeers(std::vector<gamedock_peer_struct> peersToPrint)
-{
-  Serial.print("Printing Peers: (");
-  Serial.print(peersToPrint.size());
-  Serial.println(") ");
-  for (unsigned int i = 0; i < peersToPrint.size(); i++)
-  {
-    Serial.print(i + 1);
-    Serial.print(": ");
-    printMacAddress(peersToPrint[i].address);
-    Serial.println();
-  }
 }
 
 /**
@@ -241,6 +194,131 @@ boolean areMacAddressesEqual(uint8_t first[6], uint8_t second[6])
 }
 
 /**
+ * @brief send a gamedock_send_struct to all peers
+ *
+ */
+gamedock_send_struct sendPacket(gamedock_send_struct toSend)
+{
+  // Send message via ESP-NOW
+  Serial.print("Message sending: command: ");
+  Serial.println(toSend.purpose);
+  Serial.println("Sending Mac: ");
+  printMacAddress(toSend.address);
+  Serial.println();
+  Serial.print("Send result: ");
+  Serial.println(esp_now_send(0, (uint8_t *)&toSend, sizeof(toSend)));
+  return toSend; // return this to be used again in case of failure
+}
+
+/**
+ * @brief copy a mac address from param 2 to param 1
+ *
+ *
+ */
+void copyMacAddress(uint8_t dest[], uint8_t source[], int size = 6)
+{
+  Serial.print("Copying ");
+  Serial.print(size);
+  Serial.println(" items");
+  for (int i = 0; i < size; i++)
+  {
+    dest[i] = source[i];
+  }
+  printMacAddress(source);
+  Serial.print(" should equal ");
+  printMacAddress(dest);
+  Serial.println(" after the copy procedure");
+}
+
+/**
+ * @brief print a (vector) list of peers
+ *
+ *
+ */
+void printPeers(uint8_t peersToPrint[20][6])
+{
+  Serial.println("Printing Peers:");
+  for (unsigned int i = 0; i < 20; i++)
+  {
+    if (areMacAddressesEqual(peersToPrint[i], dummyAddress))
+    {
+      break;
+    }
+    else
+    {
+      Serial.print(i + 1);
+      Serial.print(": ");
+      printMacAddress(peersToPrint[i]);
+      Serial.println();
+    }
+  }
+}
+
+void pushNewPeer(uint8_t newPeer[6])
+{
+  Serial.print("Received peer to push: ");
+  printMacAddress(newPeer);
+  Serial.println("");
+  for (int i = 0; i < 20; i++)
+  {
+    if (areMacAddressesEqual(peers[i], dummyAddress))
+    {
+      Serial.println("Copying...");
+      for (int j = 0; j < 6; j++)
+      {
+        peers[i][j] = newPeer[j];
+        Serial.print(newPeer[j]);
+        Serial.print(":");
+      }
+      Serial.println("");
+      break;
+    }
+  }
+}
+
+void removePeer(int peerNumber)
+{
+  if (peerNumber > 19)
+  {
+    Serial.print("****WARNING! PEER NOT REMOVED! PARAMETER TOO HIGH: ");
+    Serial.println(peerNumber);
+  }
+  else
+  {
+    // Remove the identified peer
+    for (int i = 0; i < 6; i++)
+    {
+      peers[peerNumber][i] = 0x00;
+    }
+    // Look at the next peer
+    peerNumber++;
+    // Iterate through the remaining peers (if it was 19, it won't interate)
+    for (int i = peerNumber; i < 20; i++)
+    {
+      // If the current address isn't 0
+      if (!areMacAddressesEqual(peers[i], dummyAddress))
+      {
+        // copy the current address into the previous (empty) address
+        for (int j = 0; j < 6; j++)
+        {
+          peers[i - 1][j] = peers[i][j];
+        }
+        // empty the current address
+        for (int j = 0; j < 6; j++)
+        {
+          peers[i + 1][j] = 0x00;
+        }
+      }
+      else
+      {
+        // if the next address was 0, we've reached the end of non-empty addresses
+        break;
+      }
+    }
+  }
+}
+
+/**
  * @brief check an incoming address against the global list of peers to see if it's new, and if so, add it to the list.
  *
  *
@@ -251,20 +329,43 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
   Serial.print("Checking address: ");
   printMacAddress(incomingAddress.address);
   Serial.println();
-  for (gamedock_peer_struct el_peer : peers) // iterate over the vector of peers
+  if (!areMacAddressesEqual(dummyAddress, incomingAddress.address))
   {
-    if (areMacAddressesEqual(el_peer.address, incomingAddress.address)) // check each el_peer to see if its address is the incoming address
+    for (int i = 0; i < 20; i++) // iterate over the array of peers
     {
-      duplicatePeer = 1; // if it's duplicate, set duplicate to 1 (true)
-      break;             // no need to keep searching, we know it's a duplicate
+      if (areMacAddressesEqual(peers[i], dummyAddress))
+      {
+        break;
+      }
+      else
+      {
+        Serial.print("Checking if ");
+        printMacAddress(peers[i]);
+        Serial.print(" is a duplicate of ");
+        printMacAddress(incomingAddress.address);
+        Serial.println("");
+        if (areMacAddressesEqual(peers[i], incomingAddress.address)) // check each el_peer to see if its address is the incoming address
+        {
+          duplicatePeer = 1; // if it's duplicate, set duplicate to 1 (true)
+          break;             // no need to keep searching, we know it's a duplicate
+        }
+      }
+    }
+    Serial.println("Finished iteration");
+    if (duplicatePeer == 0) // after iterating, if no duplicate was detected
+    {
+      Serial.print("Pushing ");
+      printMacAddress(incomingAddress.address);
+      Serial.println("");
+      pushNewPeer(incomingAddress.address); // push it to the array
+      Serial.print("Confirming: ");
+      printPeers(peers);
+      Serial.println("");
     }
   }
-  Serial.println("Finished iteration");
-  if (duplicatePeer == 0) // after iterating, if no duplicate was detected
+  else
   {
-    gamedock_peer_struct newPeer; // create a new peer
-    copyMacAddress(newPeer.address, incomingAddress.address);
-    peers.push_back(newPeer); // push it to the vector
+    Serial.println("Found a dummy address while checking and syncing");
   }
 }
 
@@ -273,16 +374,15 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
  *
  *
  */
-void broadcastMacAddress()
+void sendMacAddress()
 {
   gamedock_send_struct sending = {0};             // Create a packet to send
   sending.purpose = 1;                            // set purpose to 1 = I'm syncing and this is my Mac address
   copyMacAddress(sending.address, ownMacAddress); // Include the mac address of this device. ownMacAddress is a pointer, so we need to access the contents of the location it points to
   Serial.print("Sending own address: ");          // Logging
   printMacAddress(sending.address);               // Logging
-  Serial.println();
-  Serial.println(WiFi.macAddress()); // Logging
-  printPeers(sending.peers);
+  Serial.print(", which should equal ");
+  Serial.print(WiFi.macAddress());      // Logging
   Serial.println();                     // Logging
   lastSentPacket = sendPacket(sending); // Send the packet
 }
@@ -295,9 +395,9 @@ void broadcastMacAddress()
 void switchFromBroadcastToPeers()
 {
   esp_now_del_peer(broadcastAddress);
-  for (gamedock_peer_struct el_peer : peers)
+  for (int i = 0; i < 20; i++)
   {
-    esp_now_add_peer(el_peer.address, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+    esp_now_add_peer(peers[i], ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
   }
 }
 
@@ -308,11 +408,22 @@ void switchFromBroadcastToPeers()
  */
 void switchFromPeersToBroadcast()
 {
-  for (gamedock_peer_struct el_peer : peers)
+  for (int i = 0; i < 20; i++)
   {
-    esp_now_del_peer(el_peer.address);
+    esp_now_del_peer(peers[i]);
   }
   esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+}
+
+void copyPeers(uint8_t dest[20][6], uint8_t source[20][6])
+{
+  for (int i = 0; i < 20; i++)
+  {
+    for (int j = 0; j < 6; j++)
+    {
+      dest[i][j] = source[i][j];
+    }
+  }
 }
 
 /**
@@ -322,15 +433,27 @@ void switchFromPeersToBroadcast()
 void confirmSync()
 {
   Serial.println("Confirming sync..."); // logging
-  gamedock_send_struct sending = {0};   // Create a packet to send
-  sending.peers = peers;                // Attach the full list of peers
+  delay(100);
+  gamedock_send_struct sending = {0}; // Create a packet to send
+  copyPeers(sending.peers, peers);    // Attach the full list of peers
   sending.peerListConfirmed = 0;
   copyMacAddress(sending.address, dummyAddress); // Send a dummy address
-  Serial.print("Mac to send: ");
-  printMacAddress(sending.address);
+  sending.purpose = 2;                           // 2: this is the list of peers I have
+  Serial.println("Confirming Sync:");
+  Serial.print("Mac: ");
+  printMacAddress(sending.address); // Todo: What the heck address is being sent??
   Serial.println();
-  sending.purpose = 2;                  // 2: this is the list of peers I have
+  Serial.print("Peer list confirmed: ");
+  Serial.println(sending.peerListConfirmed);
+  Serial.print("Purpose: ");
+  Serial.println(sending.purpose);
+  Serial.print("Resend: ");
+  Serial.println(sending.resend);
+  Serial.print("Peers to send: ");
+  printPeers(sending.peers);
+  Serial.println("");
   lastSentPacket = sendPacket(sending); // Send the packet
+  Serial.println("Local peers:");
   printPeers(peers);
 }
 
@@ -342,60 +465,62 @@ void confirmSync()
 void confirmPeerList(gamedock_send_struct incomingPeers)
 {
   // int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
-  for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
+  /*for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
   {
     int duplicatePeer = 0;                     // initialize a duplicate indicator
     Serial.println("Checking MAC addresses:"); // Logging
     printMacAddress(el_incomingPeer.address);  // Logging
+    Serial.println();
+    printMacAddress(dummyAddress);
+    Serial.println();
     if (areMacAddressesEqual(el_incomingPeer.address, dummyAddress))
     {
       Serial.println("Dummy address received");
     }
     else
     {
-      for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
+      if (areMacAddressesEqual(el_incomingPeer.address, broadcastAddress))
       {
-
-        if (el_peer.address == el_incomingPeer.address)
+        Serial.println("Broadcast address received");
+      }
+      else
+      {
+        for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
         {
-          duplicatePeer = 1;             // if the incoming address equals a local address, it's a duplicate
-          Serial.println(": duplicate"); // logging
-          printMacAddress(el_peer.address);
-          Serial.println();
+
+          if (el_peer.address == el_incomingPeer.address)
+          {
+            duplicatePeer = 1;             // if the incoming address equals a local address, it's a duplicate
+            Serial.println(": duplicate"); // logging
+            printMacAddress(el_peer.address);
+            Serial.println();
+            printMacAddress(el_incomingPeer.address);
+            Serial.println();
+            break; // if so, no need to further analyze, move on to the next address
+          }
+        }
+        if (duplicatePeer == 0) // after iterating, if no duplicate was detected
+        {
+          Serial.println(": new");      // logging
+          gamedock_peer_struct newPeer; // create a new peer
+          Serial.print("Assigning ");
           printMacAddress(el_incomingPeer.address);
           Serial.println();
-          break; // if so, no need to further analyze, move on to the next address
+          copyMacAddress(newPeer.address, el_incomingPeer.address); // assign it the incoming address
+          Serial.println("Pushing ");
+          printMacAddress(newPeer.address);
+          Serial.println();
+          peers.push_back(newPeer); // push it to the vector
+          Serial.println("Peer list confirmed successfully");
         }
       }
-      if (duplicatePeer == 0) // after iterating, if no duplicate was detected
-      {
-        Serial.println(": new");      // logging
-        gamedock_peer_struct newPeer; // create a new peer
-        Serial.println("Assigning...");
-        copyMacAddress(newPeer.address, el_incomingPeer.address); // assign it the incoming address
-        Serial.println("Pushing...");
-        peers.push_back(newPeer); // push it to the vector
-        Serial.println("Peer list confirmed successfully");
-        // peerListChanged = 1;                       // There was a change to the peer list
-      }
-    }
-  }
-  /*if (peerListChanged == 1)
-  {
-    confirmSync();
-  }
-  else // There were no changes to the list
-  {
-    if (ownPeerListConfirmed == 1) // If it's been long enough that I've already sent 5 confirmations out
-    {
-      ownPeerListConfirmed = 2; // Then receiving a confirmation sets this to 2. It might not happen, for instance if I'm the last one to confirm
     }
   }*/
 }
 
-/**********************************************************************
+/********************************************************************************************************************************************
  *                           Callbacks
- **********************************************************************/
+ ********************************************************************************************************************************************/
 
 // Callback when data is sent
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
@@ -419,7 +544,7 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
 }
 
 // Callback function that will be executed when data is received
-void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
+void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 {
   gamedock_send_struct receiving;
   memcpy(&receiving, incomingData, sizeof(receiving));
@@ -428,6 +553,8 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len)
   Serial.println(len);
   Serial.print("Purpose received: ");
   Serial.println(receiving.purpose);
+  Serial.print("Resend: ");
+  Serial.println(receiving.resend);
   Serial.print("Address received: ");
   printMacAddress(receiving.address);
   Serial.println();
@@ -456,9 +583,9 @@ void doNothing()
 {
 }
 
-/**********************************************************************
+/********************************************************************************************************************************************
  *                           Setup
- **********************************************************************/
+ ********************************************************************************************************************************************/
 
 void setup()
 {
@@ -496,7 +623,7 @@ void setup()
 
   // Register a callback function when data received
   Serial.print("Receive cb registered with exit code ");
-  Serial.println(esp_now_register_recv_cb(OnDataRecv));
+  Serial.println(esp_now_register_recv_cb(OnDataRecvd));
 
   // Register a callback function when data sent
   Serial.print("Send cb registered with exit code ");
@@ -507,16 +634,15 @@ void setup()
   Serial.println(esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0));
 }
 
-/**********************************************************************
+/********************************************************************************************************************************************
  *                           Loop
- **********************************************************************/
+ ********************************************************************************************************************************************/
 
 void loop()
 {
-
-  /**********************************************************************
+  /********************************************************************************************************************************************
    *                           Sync Button
-   **********************************************************************/
+   ********************************************************************************************************************************************/
 
   syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
   if (syncButtonState != 0)                   // Sync button held down
@@ -533,7 +659,7 @@ void loop()
       {
         startSyncTime = millis();
         Serial.println("Broadcasting Mac address...");
-        broadcastMacAddress(); // send this unit's MAC address to everyone else (who's syncing)
+        sendMacAddress(); // send this unit's MAC address to everyone else (who's syncing)
       }
     }
   }
@@ -549,45 +675,32 @@ void loop()
       {
         syncStarted = 2; // Sync is ending
         digitalWrite(ACTIVITY_LED, LOW);
-        delay(10);                    // Don't crowd the channel
-        switchFromBroadcastToPeers(); // Remove the broadcast peer and register the list of peers
-        confirmSync();                // Send a copy of my peer list to my peers
-        startSyncTime = millis();     // reset the startSyncTime
+        delay(10);                // Don't crowd the channel
+                                  // switchFromBroadcastToPeers();          // Remove the broadcast peer and register the list of peers
+        confirmSync();            // Send a copy of my peer list to my peers
+        startSyncTime = millis(); // reset the startSyncTime
       }
       else // Sync is already ending
       {
-        /*if (syncStarted < 7) // confirm the list 5 times over just to be sure all changes propagate through the system
-        {
-          if (millis() - startSyncTime > 250) // wait .25 seconds between each confirmation
-          {
-            confirmSync();            // Make sure no major changes have happened
-            syncStarted++;            // increment syncStarted
-            startSyncTime = millis(); // reset the startSyncTime
-          }
-        }
-        else
-        {
-        confirmSync(); // Make sure no major changes have happened
-        */
         Serial.println("Peer list finally confirmed");
         syncStarted = 0;          // after 5 iterations, end the cycle and set syncStarted back to 0
         ownPeerListConfirmed = 1; // This is as good as it gets! 1 = I've sent 5, receive callback will set this to 2 assuming I'm not the last one to confirm
-        /*}*/
       }
     }
   }
 
-  /**********************************************************************
+  /********************************************************************************************************************************************
    *                           Turn Button
-   **********************************************************************/
+   ********************************************************************************************************************************************/
 
-  /**********************************************************************
+  /********************************************************************************************************************************************
    *                           Send Failure Catchall
-   **********************************************************************/
+   ********************************************************************************************************************************************/
   if (lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
   {
     delay(50);
-    lastDeliveryFailed = -1; // Reset variable to indicate the failure was noticed
+    lastDeliveryFailed = 0; // Reset variable to indicate the failure was noticed
+    lastSentPacket.resend = 1;
     sendPacket(lastSentPacket);
   }
 }
