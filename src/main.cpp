@@ -153,21 +153,21 @@ static const int MAX_PEERS = 20;
 uint8_t g_peers[MAX_PEERS][6] = {0};
 
 /**
- * @brief a structure to send data, which must be matched on the receiving side
+ * @brief a structure to send data, which must be matched on the receiving side.
  *
  * uint8_t address[6]:
- * The address that is currently being sent
+ * The address that is currently being sent.
  *
- * uint8_t g_peers[MAX_PEERS][6] = {0} :
- * A two dimensional array: 20 instances of 6 digit mac addresses
+ * uint8_t peers[MAX_PEERS][6] = {0} :
+ * A two dimensional array: 20 instances of 6 digit mac addresses.
  *
  * int peerListConfirmed = 0
- * A flag for whether the peer list has been confirmed
+ * A flag for whether the peer list has been confirmed.
  *
  * int purpose:
  * 1: I'm syncing and this is my MAC address
  * 2: This is the list of peers that I have
- * int resend = 0 to indicate if this is being resent because of a reported sending failure
+ * int resend = 0 to indicate if this is being resent because of a reported sending failure.
  *
  */
 typedef struct gamedock_send_struct
@@ -413,10 +413,17 @@ void sendMacAddress()
  */
 void switchFromBroadcastToPeers()
 {
-  esp_now_del_peer(BROADCAST_ADDRESS);
+  esp_now_del_peer(BROADCAST_ADDRESS); // Remove the broadcast address
   for (int i = 0; i < MAX_PEERS; i++)
   {
-    esp_now_add_peer(g_peers[i], ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
+    if (!areMacAddressesEqual(g_peers[i], DUMMY_ADDRESS)) // if the current peer is not empty
+    {
+      esp_now_add_peer(g_peers[i], ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0); // add the current peer
+    }
+    else
+    {
+      break; // otherwise we're done
+    }
   }
 }
 
@@ -429,7 +436,14 @@ void switchFromPeersToBroadcast()
 {
   for (int i = 0; i < MAX_PEERS; i++)
   {
-    esp_now_del_peer(g_peers[i]);
+    if (!areMacAddressesEqual(g_peers[i], DUMMY_ADDRESS)) // if the current peer is not empty
+    {
+      esp_now_del_peer(g_peers[i]); // delete it from the list
+    }
+    else
+    {
+      break; // otherwise we're done
+    }
   }
   esp_now_add_peer(BROADCAST_ADDRESS, ESP_NOW_ROLE_COMBO, WIFI_CHANNEL, NULL, 0);
 }
@@ -483,58 +497,60 @@ void confirmSync()
  */
 void confirmPeerList(gamedock_send_struct incomingPeers)
 {
-  // int peerListChanged = 0;                                         // initialize an indicator for whether the peer list has changed
-  /*for (gamedock_peer_struct el_incomingPeer : incomingPeers.peers) // Loop through the incoming peers
+  int peerListChanged = 0;            // initialize an indicator for whether the peer list has changed
+  for (int i = 0; i < MAX_PEERS; i++) // Loop through the incoming peers
   {
-    int duplicatePeer = 0;                     // initialize a duplicate indicator
     Serial.println("Checking MAC addresses:"); // Logging
-    printMacAddress(el_incomingPeer.address);  // Logging
-    Serial.println();
-    printMacAddress(dummyAddress);
-    Serial.println();
-    if (areMacAddressesEqual(el_incomingPeer.address, dummyAddress))
+    printMacAddress(incomingPeers.peers[i]);   // Logging
+    Serial.println();                          // Logging
+    if (!areMacAddressesEqual(incomingPeers.peers[i], DUMMY_ADDRESS))
     {
-      Serial.println("Dummy address received");
-    }
-    else
-    {
-      if (areMacAddressesEqual(el_incomingPeer.address, BROADCAST_ADDRESS))
+      if (!areMacAddressesEqual(incomingPeers.peers[i], BROADCAST_ADDRESS) && !areMacAddressesEqual(incomingPeers.peers[i], OWN_MAC_ADDRESS))
       {
-        Serial.println("Broadcast address received");
+        int duplicateFound = 0;
+        for (int j = 0; j < MAX_PEERS; j++) // for each incoming peer, loop through the local list of peers
+        {
+          if (!areMacAddressesEqual(g_peers[j], DUMMY_ADDRESS))
+          {
+            if (areMacAddressesEqual(g_peers[j], incomingPeers.peers[i]))
+            {
+              Serial.println("^ duplicate"); // logging
+              duplicateFound = 1;            // A duplicate was found
+              break;                         // if so, no need to further analyze, move on to the next address
+            }
+          }
+          else
+          {
+            break; // The end was found, stop iterating
+          }
+        }
+        if (duplicateFound == 0) // after iterating, if this is not a duplicate, push it to the global peers list
+        {
+          pushNewPeer(incomingPeers.peers[i]);
+          Serial.println("^ new"); // logging
+          peerListChanged++;       // A duplicate was not found on this, the peer list was changed
+        }
       }
       else
       {
-        for (gamedock_peer_struct el_peer : peers) // for each incoming peer, loop through the local list of peers
-        {
-
-          if (el_peer.address == el_incomingPeer.address)
-          {
-            duplicatePeer = 1;             // if the incoming address equals a local address, it's a duplicate
-            Serial.println(": duplicate"); // logging
-            printMacAddress(el_peer.address);
-            Serial.println();
-            printMacAddress(el_incomingPeer.address);
-            Serial.println();
-            break; // if so, no need to further analyze, move on to the next address
-          }
-        }
-        if (duplicatePeer == 0) // after iterating, if no duplicate was detected
-        {
-          Serial.println(": new");      // logging
-          gamedock_peer_struct newPeer; // create a new peer
-          Serial.print("Assigning ");
-          printMacAddress(el_incomingPeer.address);
-          Serial.println();
-          copyMacAddress(newPeer.address, el_incomingPeer.address); // assign it the incoming address
-          Serial.println("Pushing ");
-          printMacAddress(newPeer.address);
-          Serial.println();
-          g_peers.push_back(newPeer); // push it to the vector
-          Serial.println("Peer list confirmed successfully");
-        }
+        Serial.println("Broadcast address received");
       }
     }
-  }*/
+    else
+    {
+      Serial.println("Last address");
+      break;
+    }
+  }
+  if (peerListChanged == 0)
+  {
+    Serial.println("Peer List Confirmed!");
+  }
+  else
+  {
+    Serial.print(peerListChanged);
+    Serial.println(" new peer(s) added");
+  }
 }
 
 /********************************************************************************************************************************************
@@ -694,10 +710,10 @@ void loop()
       {
         g_syncStarted = 2; // Sync is ending
         digitalWrite(ACTIVITY_LED, LOW);
-        delay(10);                  // Don't crowd the channel
-                                    // switchFromBroadcastToPeers();          // Remove the broadcast peer and register the list of peers
-        confirmSync();              // Send a copy of my peer list to my peers
-        g_startSyncTime = millis(); // reset the g_startSyncTime
+        delay(10);                    // Don't crowd the channel
+        switchFromBroadcastToPeers(); // Remove the broadcast peer and register the list of peers
+        confirmSync();                // Send a copy of my peer list to my peers
+        g_startSyncTime = millis();   // reset the g_startSyncTime
       }
       else // Sync is already ending
       {
