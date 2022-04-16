@@ -97,6 +97,13 @@ static const int WIFI_CHANNEL = 1;
 int g_syncButtonState = 0;
 
 /**
+ * @brief flag to track whether action is still being taken from the current button press
+ *
+ *
+ */
+int g_button_pressed = 0;
+
+/**
  * @brief variable to track sync status, 0=off
  *
  *
@@ -173,12 +180,15 @@ uint8_t g_currentPlayer[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
  * uint8_t peers[MAX_PEERS][6] = {0} :
  * A two dimensional array: 20 instances of 6 digit mac addresses.
  *
- * int peerListConfirmed = 0
- * A flag for whether the peer list has been confirmed.
+ * int indicator = 0
+ * An indicator flag
+ * Purpose 2: a flag for whether the peer list has been confirmed.
+ * Purpose 3: the index number of the new current player
  *
  * int purpose:
  * 1: I'm syncing and this is my MAC address
  * 2: This is the list of peers that I have
+ * 3: I'm setting the current player
  * int resend = 0 to indicate if this is being resent because of a reported sending failure.
  *
  */
@@ -187,7 +197,7 @@ typedef struct gamedock_send_struct
   int purpose;
   uint8_t address[6];
   uint8_t peers[MAX_PEERS][6] = {0};
-  int peerListConfirmed = 0;
+  int indicator = 0;
   int resend = 0;
 } gamedock_send_struct;
 
@@ -481,7 +491,7 @@ void confirmSync()
   delay(100);
   gamedock_send_struct sending = {0}; // Create a packet to send
   copyPeers(sending.peers, g_peers);  // Attach the full list of peers
-  sending.peerListConfirmed = 0;
+  sending.indicator = 0;
   copyMacAddress(sending.address, DUMMY_ADDRESS); // Send a dummy address
   sending.purpose = 2;                            // 2: this is the list of peers I have
   Serial.println("Confirming Sync:");
@@ -489,7 +499,7 @@ void confirmSync()
   printMacAddress(sending.address); // Todo: What the heck address is being sent??
   Serial.println();
   Serial.print("Peer list confirmed: ");
-  Serial.println(sending.peerListConfirmed);
+  Serial.println(sending.indicator);
   Serial.print("Purpose: ");
   Serial.println(sending.purpose);
   Serial.print("Resend: ");
@@ -510,6 +520,7 @@ void confirmSync()
 void confirmPeerList(gamedock_send_struct incomingPeers)
 {
   int peerListChanged = 0;            // initialize an indicator for whether the peer list has changed
+  int myMacIncluded = 0;              // initialize an indicator for whether the current device's mac address is in the peer list
   for (int i = 0; i < MAX_PEERS; i++) // Loop through the incoming peers
   {
     Serial.println("Checking MAC addresses:"); // Logging
@@ -519,6 +530,10 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
     {
       if (!areMacAddressesEqual(incomingPeers.peers[i], BROADCAST_ADDRESS))
       {
+        if (areMacAddressesEqual(incomingPeers.peers[i], OWN_MAC_ADDRESS))
+        {
+          myMacIncluded = 1;
+        }
         int duplicateFound = 0;
         for (int j = 0; j < MAX_PEERS; j++) // for each incoming peer, loop through the local list of peers
         {
@@ -554,6 +569,13 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
       break;
     }
   }
+  Serial.print("My mac included? ");
+  Serial.println(myMacIncluded);
+  if (myMacIncluded == 0)
+  {
+    pushNewPeer(OWN_MAC_ADDRESS);
+    peerListChanged++;
+  }
   if (peerListChanged == 0)
   {
     Serial.println("Peer List Confirmed!");
@@ -563,6 +585,8 @@ void confirmPeerList(gamedock_send_struct incomingPeers)
     Serial.print(peerListChanged);
     Serial.println(" new peer(s) added");
   }
+  printPeers(g_peers);
+  Serial.println("");
 }
 
 int setSyncedPeers()
@@ -598,6 +622,18 @@ void sortPeerList()
   qsort(g_peers, g_syncedPeers, sizeof(g_peers[0]), sortArrayOfMacAddresses);
 }
 
+void checkIfCurrentPlayer()
+{
+  if (areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
+  {
+    digitalWrite(ACTIVITY_LED, HIGH);
+  }
+  else
+  {
+    digitalWrite(ACTIVITY_LED, LOW);
+  }
+}
+
 void setFirstPlayer()
 {
   Serial.print("First player: ");
@@ -607,10 +643,7 @@ void setFirstPlayer()
   Serial.print("My address: ");
   printMacAddress(OWN_MAC_ADDRESS);
   Serial.println("");
-  if (areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
-  {
-    digitalWrite(ACTIVITY_LED, HIGH);
-  }
+  checkIfCurrentPlayer();
 }
 
 void initializeFirstPlayer()
@@ -620,6 +653,49 @@ void initializeFirstPlayer()
   printPeers(g_peers);
   Serial.println("setFirstPlayer()");
   setFirstPlayer();
+}
+
+void passTurn()
+{
+  if (!areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
+  {
+    g_button_pressed = 0;
+    return;
+  }
+  gamedock_send_struct sending = {0};
+  sending.purpose = 3;
+  sending.indicator = -1;
+  for (int i = 0; i < g_syncedPeers; i++)
+  {
+    if (areMacAddressesEqual(g_currentPlayer, g_peers[i]))
+    {
+      int nextPlayer = -1;
+      if (!areMacAddressesEqual(g_peers[i + 1], DUMMY_ADDRESS))
+      {
+        nextPlayer = i + 1;
+      }
+      else
+      {
+        nextPlayer = 0;
+      }
+      printPeers(g_peers);
+      Serial.print("Current player: ");
+      printMacAddress(g_currentPlayer);
+      Serial.println("");
+      Serial.print("Next player(");
+      Serial.print(nextPlayer);
+      Serial.print("): ");
+      printMacAddress(g_peers[nextPlayer]);
+      Serial.println("");
+      sending.indicator = nextPlayer;
+      copyMacAddress(sending.address, g_peers[nextPlayer]);
+      copyMacAddress(g_currentPlayer, g_peers[nextPlayer]);
+      break;
+    }
+  }
+  lastSentPacket = sendPacket(sending);
+  checkIfCurrentPlayer();
+  g_button_pressed = 0;
 }
 
 /********************************************************************************************************************************************
@@ -675,6 +751,26 @@ void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
     confirmPeerList(receiving);
     Serial.print("SyncStarted: ");
     Serial.println(g_syncStarted);
+    break;
+  case 3: // A new currentPlayer is being set
+    if (receiving.indicator >= 0)
+    {
+      if (areMacAddressesEqual(receiving.address, g_peers[receiving.indicator]))
+      {
+        copyMacAddress(g_currentPlayer, receiving.address);
+        checkIfCurrentPlayer();
+      }
+      else
+      {
+        Serial.println("Error! The index does not match the address for the current player");
+        Serial.print("Index: ");
+        Serial.println(receiving.indicator);
+        Serial.print("Mac address: ");
+        printMacAddress(receiving.address);
+        printPeers(g_peers);
+        digitalWrite(NODEMCU_LED, LOW);
+      }
+    }
     break;
 
   default:
@@ -743,10 +839,11 @@ void loop()
   /********************************************************************************************************************************************
    *                           Sync Button
    ********************************************************************************************************************************************/
+  g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
   if (g_ownPeerListConfirmed == 0)
   {
-    g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
-    if (g_syncButtonState != 0)                   // Sync button held down
+
+    if (g_syncButtonState != 0) // Sync button held down
     {
       if (g_syncStarted == 0) // Sync has not started
       {
@@ -782,6 +879,13 @@ void loop()
           Serial.println("Peer list finally confirmed");
           g_syncStarted = 0;          // after 5 iterations, end the cycle and set g_syncStarted back to 0
           g_ownPeerListConfirmed = 1; // This is as good as it gets!
+          for (int i = 0; i < 3; i++)
+          {
+            digitalWrite(NODEMCU_LED, LOW);
+            delay(500);
+            digitalWrite(NODEMCU_LED, HIGH);
+            delay(500);
+          }
           initializeFirstPlayer();
         }
       }
@@ -792,6 +896,18 @@ void loop()
    ********************************************************************************************************************************************/
   else // If we've synced successfully
   {
+    if (g_syncButtonState != 0 && millis() - g_startSyncTime > 1000)
+    {
+      Serial.println(g_syncButtonState);
+      Serial.println(g_button_pressed);
+      Serial.println(millis() - g_startSyncTime);
+      if (g_button_pressed == 0)
+      {
+        g_startSyncTime = millis();
+        g_button_pressed = 1;
+        passTurn();
+      }
+    }
   }
 
   /********************************************************************************************************************************************
