@@ -9,9 +9,9 @@
 //7. Listen for 60 seconds to broadcast messages.
 //8.   If the current device's address is in a broadcasted list of addresses, make sure each other address is in the current player list
 //9. Set the current turn to peer 1
-//10. If this device is currently taking a turn, send an "I'm taking a turn" ping every second
-//10a. If not taking a turn, listen for the "I'm taking a turn ping". If not heard for over 5 seconds, advance the current player
-//11. When the current player presses the "next" or "previous" button, a "SetPlayerTurn"+NextPlayer message is sent to all peers.
+//10. When the current player presses the "next" or "previous" button, a "SetPlayerTurn"+NextPlayer message is sent to all peers.
+//11. If this device is currently taking a turn, send an "I'm taking a turn" ping every second
+//11a. If not taking a turn, listen for the "I'm taking a turn ping". If not heard for over 5 seconds, advance the current player
 //12. When a device stops taking a turn, set that device to inactive and skip it.
 //12a. When receiving a "reactivate"+PlayerNumber message, set that device to active and include it in the rotation
 //13. If the sync button is held down while a session is active, erase the session
@@ -57,6 +57,20 @@ BLue: 40:91:51:52:f0:5b
 static const int SYNC_BUTTON = 4;
 
 /**
+ * @brief PIN number of the "Previous" button
+ *
+ * For a momentary switch hooked up to GPIO 14, NodeMCU D5
+ */
+static const int PREV_BUTTON = 14;
+
+/**
+ * @brief PIN number of the "Next" button
+ *
+ * For a momentary switch hooked up to GPIO 12, NodeMCU D6
+ */
+static const int NEXT_BUTTON = 12;
+
+/**
  * @brief PIN number of a button.
  *
  * The default `0` is the "flash" button on NodeMCU, Witty Cloud, Heltec WiFi_Kit_32, etc.
@@ -95,6 +109,20 @@ static const int WIFI_CHANNEL = 1;
  *
  */
 int g_syncButtonState = 0;
+
+/**
+ * @brief variable to track "previous" button status, 0=unpressed
+ *
+ *
+ */
+int g_prevButtonState = 0;
+
+/**
+ * @brief variable to track "next" button status, 0=unpressed
+ *
+ *
+ */
+int g_nextButtonState = 0;
 
 /**
  * @brief flag to track whether action is still being taken from the current button press
@@ -655,7 +683,49 @@ void initializeFirstPlayer()
   setFirstPlayer();
 }
 
-void passTurn()
+int setNextPlayer()
+{
+  int nextPlayer = -1;
+  for (int i = 0; i < g_syncedPeers; i++)
+  {
+    if (areMacAddressesEqual(g_currentPlayer, g_peers[i]))
+    {
+      if (!areMacAddressesEqual(g_peers[i + 1], DUMMY_ADDRESS))
+      {
+        nextPlayer = i + 1;
+      }
+      else
+      {
+        nextPlayer = 0;
+      }
+      break;
+    }
+  }
+  return nextPlayer;
+}
+
+int setPrevPlayer()
+{
+  int nextPlayer = -1;
+  for (int i = g_syncedPeers - 1; i >= 0; i--)
+  {
+    if (areMacAddressesEqual(g_currentPlayer, g_peers[i]))
+    {
+      if (!areMacAddressesEqual(g_peers[i - 1], DUMMY_ADDRESS))
+      {
+        nextPlayer = i - 1;
+      }
+      else
+      {
+        nextPlayer = g_syncedPeers - 1;
+      }
+      break;
+    }
+  }
+  return nextPlayer;
+}
+
+void passTurn(int previous = 0)
 {
   if (!areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
   {
@@ -665,36 +735,27 @@ void passTurn()
   gamedock_send_struct sending = {0};
   sending.purpose = 3;
   sending.indicator = -1;
-  for (int i = 0; i < g_syncedPeers; i++)
+  int nextPlayer = -1;
+  if (previous == 0)
   {
-    if (areMacAddressesEqual(g_currentPlayer, g_peers[i]))
-    {
-      int nextPlayer = -1;
-      if (!areMacAddressesEqual(g_peers[i + 1], DUMMY_ADDRESS))
-      {
-        nextPlayer = i + 1;
-      }
-      else
-      {
-        nextPlayer = 0;
-      }
-      printPeers(g_peers);
-      Serial.print("Current player: ");
-      printMacAddress(g_currentPlayer);
-      Serial.println("");
-      Serial.print("Next player(");
-      Serial.print(nextPlayer);
-      Serial.print("): ");
-      printMacAddress(g_peers[nextPlayer]);
-      Serial.println("");
-      sending.indicator = nextPlayer;
-      copyMacAddress(sending.address, g_peers[nextPlayer]);
-      copyMacAddress(g_currentPlayer, g_peers[nextPlayer]);
-      break;
-    }
+    nextPlayer = setNextPlayer();
   }
-  lastSentPacket = sendPacket(sending);
-  checkIfCurrentPlayer();
+  else
+  {
+    nextPlayer = setPrevPlayer();
+  }
+  if (nextPlayer != -1)
+  {
+    sending.indicator = nextPlayer;
+    copyMacAddress(sending.address, g_peers[nextPlayer]);
+    copyMacAddress(g_currentPlayer, g_peers[nextPlayer]);
+    lastSentPacket = sendPacket(sending);
+    checkIfCurrentPlayer();
+  }
+  else
+  {
+    Serial.println("Error in setting next player");
+  }
   g_button_pressed = 0;
 }
 
@@ -840,6 +901,8 @@ void loop()
    *                           Sync Button
    ********************************************************************************************************************************************/
   g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
+  g_prevButtonState = digitalRead(PREV_BUTTON);
+  g_nextButtonState = digitalRead(NEXT_BUTTON);
   if (g_ownPeerListConfirmed == 0)
   {
 
@@ -896,16 +959,34 @@ void loop()
    ********************************************************************************************************************************************/
   else // If we've synced successfully
   {
-    if (g_syncButtonState != 0 && millis() - g_startSyncTime > 1000)
+    if (millis() - g_startSyncTime > 1000)
     {
-      Serial.println(g_syncButtonState);
-      Serial.println(g_button_pressed);
-      Serial.println(millis() - g_startSyncTime);
-      if (g_button_pressed == 0)
+      if (g_nextButtonState != 0)
       {
-        g_startSyncTime = millis();
-        g_button_pressed = 1;
-        passTurn();
+        Serial.println(g_nextButtonState);
+        Serial.println(g_button_pressed);
+        Serial.println(millis() - g_startSyncTime);
+        if (g_button_pressed == 0)
+        {
+          g_startSyncTime = millis();
+          g_button_pressed = 1;
+          passTurn();
+        }
+      }
+      else
+      {
+        if (g_prevButtonState != 0)
+        {
+          Serial.println(g_prevButtonState);
+          Serial.println(g_button_pressed);
+          Serial.println(millis() - g_startSyncTime);
+          if (g_button_pressed == 0)
+          {
+            g_startSyncTime = millis();
+            g_button_pressed = 1;
+            passTurn(1);
+          }
+        }
       }
     }
   }
