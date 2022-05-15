@@ -119,6 +119,13 @@ int g_syncButtonState = 0;
 int g_prevButtonState = 0;
 
 /**
+ *
+ * @brief variable to track when the previous button was last pressed down
+ *
+ */
+unsigned long g_prevStart = 0;
+
+/**
  * @brief variable to track "next" button status, 0=unpressed
  *
  *
@@ -126,11 +133,18 @@ int g_prevButtonState = 0;
 int g_nextButtonState = 0;
 
 /**
+ *
+ * @brief variable to track when the next  button was last pressed down
+ *
+ */
+unsigned long g_nextStart = 0;
+
+/**
  * @brief flag to track whether action is still being taken from the current button press
  *
  *
  */
-int g_button_pressed = 0;
+// int g_button_pressed = 0;
 
 /**
  * @brief variable to track sync status, 0=off
@@ -167,6 +181,12 @@ unsigned long g_duration = 0;
 unsigned long g_durationStart = 0;
 
 int g_newDurationAvailable = 1;
+
+/**
+ * @brief variable used to determine whether the first player is being bothered (purpose 5)
+ *
+ */
+int g_beingBothered = 0;
 
 /**
  * @brief address used for broadcasting via espnow
@@ -251,23 +271,24 @@ uint8_t g_firstPlayer[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
  * 2: This is the list of peers that I have
  * 3: I'm setting the current player
  * 4: I'm registering my turn order
+ * 5: I'm poking the current player
  * int resend = 0 to indicate if this is being resent because of a reported sending failure.
  *
  */
-typedef struct gamedock_send_struct
+typedef struct autosync_send_struct
 {
   int purpose;
   uint8_t address[6];
   uint8_t peers[MAX_PEERS][6] = {0};
   int indicator = 0;
   int resend = 0;
-} gamedock_send_struct;
+} autosync_send_struct;
 
 // Create a struct_message called sending to store variables to be sent
-gamedock_send_struct sending = {0};
+autosync_send_struct sending = {0};
 
 // Create a struct_message called receiving
-gamedock_send_struct lastSentPacket = {0};
+autosync_send_struct lastSentPacket = {0};
 
 /********************************************************************************************************************************************
  *                           Functions
@@ -309,7 +330,7 @@ boolean areMacAddressesEqual(uint8_t first[6], uint8_t second[6])
  *
  *
  */
-gamedock_send_struct sendPacket(gamedock_send_struct toSend)
+autosync_send_struct sendPacket(autosync_send_struct toSend)
 {
   // Send message via ESP-NOW
   Serial.print("Message sending: command: ");
@@ -362,7 +383,7 @@ void printPeers(uint8_t peersToPrint[MAX_PEERS][6])
 }
 
 /**
- *
+ * @brief an interrupt function to track how long the sync button has been held down
  *
  */
 IRAM_ATTR void syncInterrupt()
@@ -371,6 +392,7 @@ IRAM_ATTR void syncInterrupt()
   {
     Serial.println("Duration start");
     g_durationStart = millis();
+    g_duration = 0;
   }
   else
   {
@@ -415,7 +437,7 @@ void pushNewPeer(uint8_t newPeer[6])
  *
  *
  */
-void removePeer(int peerNumber)
+void removeAddressFromArray(int peerNumber)
 {
   if (peerNumber > MAX_PEERS - 1)
   {
@@ -457,6 +479,20 @@ void removePeer(int peerNumber)
   }
 }
 
+/********************************************************************************************************************************************
+ *                           Send Failure Catchall
+ ********************************************************************************************************************************************/
+void checkFailure()
+{
+  if (g_lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
+  {
+    delay(50);
+    g_lastDeliveryFailed = 0; // Reset variable to indicate the failure was noticed
+    lastSentPacket.resend = 1;
+    sendPacket(lastSentPacket);
+  }
+}
+
 /**
  * @brief check an incoming address against the global list of peers to see if it's new, and if so, add it to the list.
  *  Depends on areMacAddressesEqual and pushNewPeer
@@ -464,9 +500,8 @@ void removePeer(int peerNumber)
  *  @param incomingAddress a gamedock_send_struct to check
  *
  *
- *
  */
-void checkAndSyncAddress(gamedock_send_struct incomingAddress)
+void checkAndSyncAddress(autosync_send_struct incomingAddress)
 {
   int duplicatePeer = 0;                                             // Initialize a duplicate indicator
   if (!areMacAddressesEqual(DUMMY_ADDRESS, incomingAddress.address)) // If the incoming address isn't zeroes
@@ -504,7 +539,7 @@ void checkAndSyncAddress(gamedock_send_struct incomingAddress)
  */
 void sendMacAddress()
 {
-  gamedock_send_struct sending = {0};               // Create a packet to send
+  autosync_send_struct sending = {0};               // Create a packet to send
   sending.purpose = 1;                              // set purpose to 1 = I'm syncing and this is my Mac address
   copyMacAddress(sending.address, OWN_MAC_ADDRESS); // Include the mac address of this device.
   lastSentPacket = sendPacket(sending);             // Send the packet
@@ -571,7 +606,7 @@ void confirmSync()
 {
   Serial.println("Confirming sync..."); // logging
   delay(100);
-  gamedock_send_struct sending = {0}; // Create a packet to send
+  autosync_send_struct sending = {0}; // Create a packet to send
   copyPeers(sending.peers, g_peers);  // Attach the full list of peers
   sending.indicator = 0;
   copyMacAddress(sending.address, DUMMY_ADDRESS); // Send a dummy address
@@ -599,7 +634,7 @@ void confirmSync()
  *
  *
  */
-void confirmPeerList(gamedock_send_struct incomingPeers)
+void confirmPeerList(autosync_send_struct incomingPeers)
 {
   int peerListChanged = 0;            // initialize an indicator for whether the peer list has changed
   int myMacIncluded = 0;              // initialize an indicator for whether the current device's mac address is in the peer list
@@ -681,10 +716,10 @@ int setSyncedPeers()
       return i;
     }
   }
-  return MAX_PEERS;
+  return g_syncedPeers;
 }
 
-int sortArrayOfMacAddresses(const void *cmp1, const void *cmp2)
+int macAddressSorter(const void *cmp1, const void *cmp2)
 {
   int a = 0;
   int b = 0;
@@ -696,12 +731,12 @@ int sortArrayOfMacAddresses(const void *cmp1, const void *cmp2)
   return b - a;
 }
 
-void sortPeerList()
+void sortMacAddressArrayList()
 {
   g_syncedPeers = setSyncedPeers();
   Serial.print("Peers synced: ");
   Serial.println(g_syncedPeers);
-  qsort(g_peers, g_syncedPeers, sizeof(g_peers[0]), sortArrayOfMacAddresses);
+  qsort(g_peers, g_syncedPeers, sizeof(g_peers[0]), macAddressSorter);
 }
 
 void checkIfCurrentPlayer()
@@ -709,10 +744,24 @@ void checkIfCurrentPlayer()
   if (areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
   {
     digitalWrite(ACTIVITY_LED, HIGH);
+    Serial.print("I am the current player: ");
+    printMacAddress(g_currentPlayer);
   }
   else
   {
     digitalWrite(ACTIVITY_LED, LOW);
+    Serial.println("I am not the current player: ");
+    printMacAddress(g_currentPlayer);
+    Serial.println("");
+    printMacAddress(OWN_MAC_ADDRESS);
+    Serial.println("");
+    for (int i = 0; i < 6; i++)
+    {
+      Serial.println(g_currentPlayer[i] == OWN_MAC_ADDRESS[i]);
+      Serial.print(g_currentPlayer[i]);
+      Serial.print(" | ");
+      Serial.println(OWN_MAC_ADDRESS[i]);
+    }
   }
 }
 
@@ -813,7 +862,7 @@ void sendAndRegisterTurnOrder(uint8_t addressToSend[6])
 {
   Serial.print("Sending turn order: ");
   printMacAddress(addressToSend);
-  gamedock_send_struct sending = {0};
+  autosync_send_struct sending = {0};
   sending.purpose = 4;
   copyMacAddress(sending.address, addressToSend);
   lastSentPacket = sendPacket(sending);
@@ -830,11 +879,11 @@ void passTurn(int player = -1)
 {
   if (!areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS)) // If this device isn't the current player
   {                                                            // Then ignore this button press
-    g_button_pressed = 0;
+    // g_button_pressed = 0;
     return;
   }
   // Initialize a packet to send
-  gamedock_send_struct sending = {0};
+  autosync_send_struct sending = {0};
   sending.purpose = 3;
   sending.indicator = -1;
   int nextPlayer = -1;
@@ -870,7 +919,7 @@ void passTurn(int player = -1)
   {
     Serial.println("Error in setting next player");
   }
-  g_button_pressed = 0;
+  // g_button_pressed = 0;
 }
 
 void setFirstPlayer()
@@ -900,6 +949,7 @@ void setFirstPlayer()
   {
     Serial.println("Waiting for first player to be set...");
     printMacAddress(g_firstPlayer);
+    Serial.println("");
     g_startSyncTime = millis();
     while (areMacAddressesEqual(g_firstPlayer, DUMMY_ADDRESS))
     {
@@ -919,14 +969,15 @@ void setFirstPlayer()
     }
     Serial.print("Found first player: ");
     printMacAddress(g_firstPlayer);
+    copyMacAddress(g_currentPlayer, g_firstPlayer);
   }
   checkIfCurrentPlayer();
 }
 
 void initializeFirstPlayer()
 {
-  Serial.println("sortPeerList()");
-  sortPeerList();
+  Serial.println("sortMacAddressArrayList()");
+  sortMacAddressArrayList();
   printPeers(g_peers);
   Serial.println("setFirstPlayer()");
   setFirstPlayer();
@@ -994,9 +1045,14 @@ void playerCountBlink()
 nextplayer == 3, 1000 == 200 + (200 * (3 + 1))
 0   200   400   600   800   1000   1200   1400   1600   1800   2000
 On--off   on----off   on----off
-
-
 */
+
+void botherFirstPlayer()
+{
+  autosync_send_struct sending = {0};
+  sending.purpose = 5;
+  lastSentPacket = sendPacket(sending);
+}
 
 /********************************************************************************************************************************************
  *                           Callbacks
@@ -1026,7 +1082,7 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
 // Callback function that will be executed when data is received
 void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
 {
-  gamedock_send_struct receiving;
+  autosync_send_struct receiving;
   memcpy(&receiving, incomingData, sizeof(receiving));
   Serial.println("Recieving...");
   Serial.print("Bytes received: ");
@@ -1065,6 +1121,12 @@ void OnDataRecvd(uint8_t *mac, uint8_t *incomingData, uint8_t len)
     break;
   case 4:                                 // A new player has selected their turn order
     registerTurnOrder(receiving.address); // register their turn order and set g_allSelected to 1 if this is the final player
+    break;
+  case 5:
+    if (areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS))
+    {
+      g_beingBothered = 1;
+    }
     break;
 
   default:
@@ -1134,14 +1196,15 @@ void setup()
 void loop()
 {
   /********************************************************************************************************************************************
-   *                           Sync Button
+   *                           Initial Sync
    ********************************************************************************************************************************************/
-  g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
-  g_prevButtonState = digitalRead(PREV_BUTTON);
-  g_nextButtonState = digitalRead(NEXT_BUTTON);
-  if (g_ownPeerListConfirmed == 0)
-  {
 
+  while (g_ownPeerListConfirmed == 0)
+  {
+    yield();
+    g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
+    g_prevButtonState = digitalRead(PREV_BUTTON);
+    g_nextButtonState = digitalRead(NEXT_BUTTON);
     if (g_syncButtonState != 0) // Sync button held down
     {
       if (g_syncStarted == 0) // Sync has not started
@@ -1175,7 +1238,6 @@ void loop()
           copyMacAddress(g_tempPeers[i], DUMMY_ADDRESS);
         }
         Serial.println("Peer list finally confirmed");
-        g_ownPeerListConfirmed = 1; // This is as good as it gets!
 
         // Delay 3 seconds to let everyone else catch up
         for (int i = 0; i < 3; i++)
@@ -1189,58 +1251,75 @@ void loop()
         initializeFirstPlayer(); // If this device is the lowest MAC, set the first player. Otherwise wait for first player
         delay(50);
         registerTurnOrder(g_firstPlayer); // This device has either set
-        int chosen = 0;
-        if (areMacAddressesEqual(g_firstPlayer, OWN_MAC_ADDRESS))
-        {
-          chosen = 1;
-        }
+
         g_startSyncTime = millis();
-        // Loop here while waiting for the player order to initialize
-        // Blink a number of times equal to the current player number being chosen
-        // On any input, if not the first player, send a packet with purpose 4 to register turn order
-        // After this device's order is chosen, put LED on solid
-        while (1 == 1)
-        {
-          yield();                                      // This is required in potentially infinite loops
-          playerCountBlink();                           // Blink to indicate the current player order being chosen
-          g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
-          g_prevButtonState = digitalRead(PREV_BUTTON); // Any button will do
-          g_nextButtonState = digitalRead(NEXT_BUTTON);
-          if (g_allSelected != 0 || chosen == 1 || g_syncButtonState != 0 || g_prevButtonState != 0 || g_nextButtonState != 0)
-          {
-            sendAndRegisterTurnOrder(OWN_MAC_ADDRESS); // Send a packet to put this device in the turn order lineup next
-            digitalWrite(ACTIVITY_LED, HIGH);          // Turn the LED on solidly
-            while (g_allSelected == 0)                 // Wait here until all are selected
-            {
-              yield(); // This is required in potentially infinite loops
-              g_startSyncTime = millis();
-              if (millis() - g_startSyncTime == 1000)
-              {
-                g_startSyncTime = millis();
-                Serial.print("All selected: ");
-                Serial.println(g_allSelected);
-              }
-            }
-            copyPeers(g_peers, g_tempPeers); // Copy the new turn order into the global list
-            digitalWrite(ACTIVITY_LED, LOW); // Turn off the LED
-            Serial.println("All done setting order!");
-            delay(1000);
-            Serial.println("Current player:");
-            printMacAddress(g_currentPlayer);
-            Serial.println("");
-            checkIfCurrentPlayer(); // Check if we're the current player and turn it back on
-            break;                  // break out of the above while loop
-          }
-        }
+        g_ownPeerListConfirmed = 1; // This is as good as it gets!
+        break;
       }
     }
   }
+
   /********************************************************************************************************************************************
-   *                           Turn Button
+   *                           Player Order Selection
    ********************************************************************************************************************************************/
-  else // If we've synced successfully and set player turn order
+  // Loop here while waiting for the player order to initialize
+  // Blink a number of times equal to the current player number being chosen
+  // On any input, if not the first player, send a packet with purpose 4 to register turn order
+  // After this device's order is chosen, put LED on solid
+  while (1 == 1)
   {
-    /*if (g_newDurationAvailable == 1)
+    yield();                                      // This is required in potentially infinite loops
+    playerCountBlink();                           // Blink to indicate the current player order being chosen
+    g_syncButtonState = digitalRead(SYNC_BUTTON); // get the physical sync button's state
+    g_prevButtonState = digitalRead(PREV_BUTTON); // Any button will do
+    g_nextButtonState = digitalRead(NEXT_BUTTON);
+    if (g_allSelected != 0 || areMacAddressesEqual(g_firstPlayer, OWN_MAC_ADDRESS) || g_syncButtonState != 0 || g_prevButtonState != 0 || g_nextButtonState != 0)
+    {
+      break; // break out of the above while loop
+    }
+  }
+
+  /********************************************************************************************************************************************
+   *                           Wait for all players to choose their order
+   ********************************************************************************************************************************************/
+  sendAndRegisterTurnOrder(OWN_MAC_ADDRESS); // Send a packet to put this device in the turn order lineup next
+  digitalWrite(ACTIVITY_LED, HIGH);          // Turn the LED on solidly
+  while (g_allSelected == 0)                 // Wait here until all are selected
+  {
+    yield(); // This is required in potentially infinite loops
+    g_startSyncTime = millis();
+    if (millis() - g_startSyncTime == 1000)
+    {
+      g_startSyncTime = millis();
+      Serial.print("All selected: ");
+      Serial.println(g_allSelected);
+    }
+  }
+  copyPeers(g_peers, g_tempPeers); // Copy the new turn order into the global list
+  digitalWrite(ACTIVITY_LED, LOW); // Turn off the LED
+  Serial.println("All done setting order!");
+  delay(1000);
+  Serial.println("Current player:");
+  printMacAddress(g_currentPlayer);
+  Serial.println("");
+  checkIfCurrentPlayer();     // Check if we're the current player and turn it back on
+  g_newDurationAvailable = 0; // reset this before listening to the potential reset
+  g_syncStarted = 0;          // reset this before heading into the next section
+  uint8_t botherCount = 0;    // variable for tracking how long we've been bothered
+  int botheringStarted = 0;   // variable to indicate if bothering command was received
+
+  /********************************************************************************************************************************************
+   *                           Take turns
+   ********************************************************************************************************************************************/
+  // If we've synced successfully and set player turn order
+  while (1 == 1)
+  {
+    yield();
+    g_prevButtonState = digitalRead(PREV_BUTTON);
+    g_nextButtonState = digitalRead(NEXT_BUTTON);
+    // If the sync button has been held down, see if it was held
+    // down long enough to trigger a restart (3 seconds)
+    if (g_newDurationAvailable == 1)
     {
       g_newDurationAvailable = 0;
       if (g_duration > 3000 || (g_durationStart != 0 && millis() - g_durationStart > 3000 && millis() - g_durationStart < 3100))
@@ -1250,49 +1329,126 @@ void loop()
         Serial.println(g_duration);
         Serial.print("g_durationStart: ");
         Serial.println(g_durationStart);
+        digitalWrite(ACTIVITY_LED, LOW);
+        digitalWrite(FLASH_BUTTON, HIGH);
+        digitalWrite(NODEMCU_LED, HIGH);
         ESP.restart();
       }
-    }*/
-    if (millis() - g_startSyncTime > 1000)
+    }
+
+    // If the next button is unpressed, zero its start time
+    if (g_nextButtonState == 0)
+    {
+      g_nextStart = 0;
+    }
+    // if the previous button is unpressed, zero its start time
+    if (g_prevButtonState == 0)
+    {
+      g_prevStart = 0;
+    }
+    // if the next button is pressed and its start time is zero, record a new start time
+    if (g_nextButtonState != 0 && g_nextStart == 0)
+    {
+      g_nextStart = millis();
+      Serial.print("Next pressed: ");
+      Serial.println(g_nextStart);
+    }
+    // if the previous button is pressed and its start time is zero, record a new start time
+    if (g_prevButtonState != 0 && g_prevStart == 0)
+    {
+      g_prevStart = millis();
+      Serial.print("Previous pressed: ");
+      Serial.println(g_prevStart);
+    }
+    // If either the next or previous buttons are held down...
+    if (g_nextStart != 0 || g_prevStart != 0)
+    {
+      // Pass the turn if this device is the current player
+      if (areMacAddressesEqual(g_currentPlayer, OWN_MAC_ADDRESS)) // If this device is the current player
+      {                                                           // Then pass the turn
+        if (g_nextStart != 0)
+        {
+          passTurn(-1);
+        }
+        if (g_prevStart != 0)
+        {
+          passTurn(-2);
+        }
+      }
+      else // if this device wasn't the current player before the button was pressed...
+      {
+        // If both buttons have been held down for more than 3 seconds,
+        // and no more often than every half second,
+        // send a bother command to first player
+        if (millis() % 500 == 0 && millis() - g_nextStart > 3000 && millis() - g_prevStart > 3000)
+        {
+          botherFirstPlayer();
+        }
+      }
+    }
+    // if this device received a new bother command successfully
+    if (g_beingBothered == 1 && botheringStarted == 0)
+    {
+      // Set a local bothering variable so that we can see if a new bothering command is received later
+      botheringStarted = 1;
+      g_beingBothered = 0;
+    }
+    // if bothering has begun
+    if (botheringStarted == 1)
+    {
+      if (millis() - g_startSyncTime > 50)
+      {
+        digitalWrite(ACTIVITY_LED, LOW); // turn off the LED every 50ms (and the first time)
+        if (millis() - g_startSyncTime > 100)
+        {
+          digitalWrite(ACTIVITY_LED, HIGH); // turn off the LED after 100ms (and the first time)
+          g_startSyncTime = millis();       // reset the start time for the LED
+          botherCount++;                    // increase the count of times we've blinked
+        }
+      }
+      if (botherCount > 11) // After 11 blinks, check if we're still being bothered
+      {
+        if (g_beingBothered == 0) // If we've not received a new bother command
+        {                         // End the bothering
+          botheringStarted = 0;
+        }
+        else
+        {
+          g_beingBothered = 0; // Otherwise we will keep being bothered, and reset this to prepare to check yet again
+        }
+        botherCount = 0; // reset the count
+      }
+    }
+
+    /*if (millis() - g_startSyncTime > 1000)
     {
       if (g_nextButtonState != 0)
       {
         Serial.println(g_nextButtonState);
-        Serial.println(g_button_pressed);
+        // Serial.println(g_button_pressed);
         Serial.println(millis() - g_startSyncTime);
-        if (g_button_pressed == 0)
-        {
-          g_startSyncTime = millis();
-          g_button_pressed = 1;
-          passTurn(-1);
-        }
+        // if (g_button_pressed == 0)
+        //{
+        g_startSyncTime = millis();
+        // g_button_pressed = 1;
+        passTurn(-1);
+        //}
       }
       else
       {
         if (g_prevButtonState != 0)
         {
           Serial.println(g_prevButtonState);
-          Serial.println(g_button_pressed);
+          // Serial.println(g_button_pressed);
           Serial.println(millis() - g_startSyncTime);
-          if (g_button_pressed == 0)
-          {
-            g_startSyncTime = millis();
-            g_button_pressed = 1;
-            passTurn(-2);
-          }
+          // if (g_button_pressed == 0)
+          //{
+          g_startSyncTime = millis();
+          // g_button_pressed = 1;
+          passTurn(-2);
+          //}
         }
       }
-    }
-  }
-
-  /********************************************************************************************************************************************
-   *                           Send Failure Catchall
-   ********************************************************************************************************************************************/
-  if (g_lastDeliveryFailed == 1) // If a send failure was detected, stop execution for 50ms and resend
-  {
-    delay(50);
-    g_lastDeliveryFailed = 0; // Reset variable to indicate the failure was noticed
-    lastSentPacket.resend = 1;
-    sendPacket(lastSentPacket);
+    }*/
   }
 }
